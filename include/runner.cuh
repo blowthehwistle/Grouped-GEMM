@@ -302,33 +302,37 @@ void runCublasGroupedTF32_with_TC(cublasHandle_t handle, float *A, float *B, flo
                                   int *B_offset, int *C_offset, float alpha, float bet) {
   cublasSetMathMode(handle, CUBLAS_TF32_TENSOR_OP_MATH);
 
-  // Create array for grouped matrices
+  // cuBLAS is column-major; loop uses B first, A second with dims (N,M,K) to compute C = (A*B)^T
+  // storage. Match that for Grouped API: first=B, second=A, m_array=N, n_array=M, k_array=K
   float *A_array[batch_size], *B_array[batch_size], *C_array[batch_size];
+  int m_api[batch_size], n_api[batch_size];
+  int lda_api[batch_size], ldb_api[batch_size], ldc_api[batch_size];
 
   for (int batch = 0; batch < batch_size; batch++) {
     A_array[batch] = A + A_offset[batch];
     B_array[batch] = B + B_offset[batch];
     C_array[batch] = C + C_offset[batch];
+    m_api[batch] = n_list[batch];    // N (first matrix B is N×K)
+    n_api[batch] = m_list[batch];    // M (second matrix A is K×M)
+    lda_api[batch] = n_list[batch];  // B(K,N) row-major → ld=N
+    ldb_api[batch] = k_list[batch];  // A(M,K) row-major → ld=K
+    ldc_api[batch] = n_list[batch];  // C(M,N) row-major → ld=N
   }
 
-  float **d_A_array = nullptr;
   float **d_B_array = nullptr;
+  float **d_A_array = nullptr;
   float **d_C_array = nullptr;
 
-  CHECK_CUDA(cudaMalloc(&d_A_array, batch_size * sizeof(float *)));
   CHECK_CUDA(cudaMalloc(&d_B_array, batch_size * sizeof(float *)));
+  CHECK_CUDA(cudaMalloc(&d_A_array, batch_size * sizeof(float *)));
   CHECK_CUDA(cudaMalloc(&d_C_array, batch_size * sizeof(float *)));
 
-  CHECK_CUDA(cudaMemcpy(d_A_array, A_array, batch_size * sizeof(float *), cudaMemcpyHostToDevice));
   CHECK_CUDA(cudaMemcpy(d_B_array, B_array, batch_size * sizeof(float *), cudaMemcpyHostToDevice));
+  CHECK_CUDA(cudaMemcpy(d_A_array, A_array, batch_size * sizeof(float *), cudaMemcpyHostToDevice));
   CHECK_CUDA(cudaMemcpy(d_C_array, C_array, batch_size * sizeof(float *), cudaMemcpyHostToDevice));
 
-  // Set grouped batched gemm configurations for cublasGemmGroupedBatchedEx
   cublasOperation_t transa_array[batch_size];
   cublasOperation_t transb_array[batch_size];
-  int lda_array[batch_size];
-  int ldb_array[batch_size];
-  int ldc_array[batch_size];
   float alpha_array[batch_size];
   float beta_array[batch_size];
   int group_size[batch_size];
@@ -336,22 +340,19 @@ void runCublasGroupedTF32_with_TC(cublasHandle_t handle, float *A, float *B, flo
   for (int batch = 0; batch < batch_size; batch++) {
     transa_array[batch] = CUBLAS_OP_N;
     transb_array[batch] = CUBLAS_OP_N;
-    lda_array[batch] = k_list[batch];   // A(M,K) row-major
-    ldb_array[batch] = n_list[batch];   // B(K,N) row-major
-    ldc_array[batch] = n_list[batch];   // C(M,N) row-major
     alpha_array[batch] = 1.0;
     beta_array[batch] = 0.0;
     group_size[batch] = 1;
   }
 
   cublasGemmGroupedBatchedEx(
-      handle, transa_array, transb_array, m_list, n_list, k_list, alpha_array,
-      (void const *const *)d_A_array, CUDA_R_32F, lda_array, (void const *const *)d_B_array,
-      CUDA_R_32F, ldb_array, beta_array, (void *const *)d_C_array, CUDA_R_32F, ldc_array,
+      handle, transa_array, transb_array, m_api, n_api, k_list, alpha_array,
+      (void const *const *)d_B_array, CUDA_R_32F, lda_api, (void const *const *)d_A_array,
+      CUDA_R_32F, ldb_api, beta_array, (void *const *)d_C_array, CUDA_R_32F, ldc_api,
       batch_size, group_size, CUBLAS_COMPUTE_32F_FAST_TF32);
 
-  cudaFree(d_A_array);
   cudaFree(d_B_array);
+  cudaFree(d_A_array);
   cudaFree(d_C_array);
 }
 

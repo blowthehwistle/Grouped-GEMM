@@ -1,0 +1,12 @@
+# Ignore VSCode settings directory
+.vscode
+
+# Ignore compiled binary executables (likely from Linux/Unix build)
+tmain_4k
+tmain_batched_4k
+tmain_grouped
+tmain_grouped_half
+
+# Ignore NVIDIA Nsight Systems report files
+*.nsys-rep
+*.ncu-rep

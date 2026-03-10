@@ -133,7 +133,19 @@ Grouped GEMM의 행렬 크기(M, N, K)는 **config 파일** 또는 **CLI 인자*
 
 ### 1. config.yaml 사용
 
-`experiments/compare_grouped/config.yaml`의 `grouped` 섹션에서 M, N, K 리스트를 설정합니다.
+`experiments/compare_grouped/config.yaml`의 `grouped` 섹션에서 설정합니다.
+
+#### Uniform 모드 (모든 배치 동일한 M, N, K)
+
+```yaml
+grouped:
+  batch_size: 8
+  m: 1024
+  n: 4096
+  k: 14336
+```
+
+#### 리스트 모드 (배치별로 다른 M, N, K)
 
 ```yaml
 grouped:
@@ -146,7 +158,36 @@ grouped:
 python experiments/compare_grouped/run_all.py --config experiments/compare_grouped/config.yaml
 ```
 
-### 2. CLI 인자로 지정
+### 2. CUDA 전용 config 파일 (grouped_config.txt)
+
+`run_all.py`는 `results/benchmark/cuda/grouped_config.txt`에 M, N, K를 저장하고 CUDA 바이너리에 전달합니다. CUDA를 직접 실행할 때도 이 형식의 파일을 사용할 수 있습니다.
+
+**형식**: 한 줄당 `M N K` (공백 구분, 배치 1개)
+
+```
+1024 4096 14336
+1024 4096 14336
+512  2048 8192
+256  1024 4096
+```
+
+**직접 실행**:
+
+```bash
+make grouped
+./bin/tmain_grouped 2 p results/benchmark/cuda/grouped_config.txt
+```
+
+**인자 형식**:
+
+- `./bin/tmain_grouped <kernel> <mode> <config_file>` — config 파일에서 배치별 M,N,K 로드
+- `./bin/tmain_grouped <kernel> <mode> <batch_size> <m> <n> <k>` — uniform (모든 배치 동일)
+- `kernel`: 0=cuBLAS 루프, 1=cuBLAS Grouped, 2=custom
+- `mode`: `p`=compact 출력
+
+> **참고**: kernel 2 (custom)는 단일 K만 지원합니다. 배치별로 K가 다르면 자동으로 kernel 1로 폴백됩니다.
+
+### 3. CLI 인자로 지정 (Triton, Torch)
 
 `--m`, `--n`, `--k`로 콤마 구분 리스트를 넘깁니다.
 
@@ -155,11 +196,11 @@ python implementations/torch/torch_grouped_gemm.py --m 1024,512,256 --n 1024,512
 python implementations/triton/triton_grouped_gemm.py --benchmark-only --m 1024,512 --n 1024,512 --k 1024,512
 ```
 
-### 3. 우선순위
+### 4. 우선순위
 
-CLI 인자 > config 파일 > 기본값 (`[1024, 512, 256, 128]`)
+CLI 인자 > config 파일 > 기본값 (batch_size=8, M=1024, N=4096, K=14336)
 
-### 4. Python 코드에서 사용
+### 5. Python 코드에서 사용
 
 ```python
 # experiments/compare_grouped 기준으로 실행하거나, sys.path에 experiments 추가 후

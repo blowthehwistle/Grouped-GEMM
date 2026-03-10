@@ -24,10 +24,11 @@ Usage:
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-# 기본값 (기존 하드코딩과 동일)
-DEFAULT_M = [1024, 512, 256, 128]
-DEFAULT_N = [1024, 512, 256, 128]
-DEFAULT_K = [1024, 512, 256, 128]
+# 기본값 (CUDA grouped_gemm.cu와 동일: batch_size=8, M=1024, N=4096, K=14336)
+DEFAULT_BATCH_SIZE = 8
+DEFAULT_M = 1024
+DEFAULT_N = 4096
+DEFAULT_K = 14336
 
 
 def _parse_list(s: str) -> List[int]:
@@ -37,29 +38,50 @@ def _parse_list(s: str) -> List[int]:
 
 
 def load_from_yaml(path: Path) -> Tuple[List[int], List[int], List[int]]:
-    """config.yaml에서 grouped 설정 로드."""
+    """
+    config.yaml에서 grouped 설정 로드.
+
+    지원 형식:
+    1) uniform: batch_size, m, n, k (스칼라) → 8개 GEMM, 모두 (1024,4096,14336)
+    2) list: m, n, k (리스트) → 각 배치별 크기
+    """
     try:
         import yaml
     except ImportError:
-        return DEFAULT_M, DEFAULT_N, DEFAULT_K
+        return (
+            [DEFAULT_M] * DEFAULT_BATCH_SIZE,
+            [DEFAULT_N] * DEFAULT_BATCH_SIZE,
+            [DEFAULT_K] * DEFAULT_BATCH_SIZE,
+        )
 
     if not path.exists():
-        return DEFAULT_M, DEFAULT_N, DEFAULT_K
+        return (
+            [DEFAULT_M] * DEFAULT_BATCH_SIZE,
+            [DEFAULT_N] * DEFAULT_BATCH_SIZE,
+            [DEFAULT_K] * DEFAULT_BATCH_SIZE,
+        )
 
     with open(path) as f:
         data = yaml.safe_load(f) or {}
 
     grouped = data.get("grouped", {})
-    m_list = grouped.get("m", DEFAULT_M)
-    n_list = grouped.get("n", DEFAULT_N)
-    k_list = grouped.get("k", DEFAULT_K)
+    batch_size = grouped.get("batch_size", DEFAULT_BATCH_SIZE)
+    m_val = grouped.get("m", DEFAULT_M)
+    n_val = grouped.get("n", DEFAULT_N)
+    k_val = grouped.get("k", DEFAULT_K)
 
-    if isinstance(m_list, str):
-        m_list = _parse_list(m_list)
-    if isinstance(n_list, str):
-        n_list = _parse_list(n_list)
-    if isinstance(k_list, str):
-        k_list = _parse_list(k_list)
+    # 리스트 형식인지 스칼라인지 판별
+    def to_list(v):
+        if isinstance(v, list):
+            return [int(x) for x in v]
+        if isinstance(v, str):
+            parsed = _parse_list(v)
+            return parsed if len(parsed) > 1 else parsed * batch_size
+        return [int(v)] * batch_size
+
+    m_list = to_list(m_val)
+    n_list = to_list(n_val)
+    k_list = to_list(k_val)
 
     return m_list, n_list, k_list
 
@@ -84,7 +106,9 @@ def load_grouped_sizes(
     Returns:
         (m_list, n_list, k_list)
     """
-    m_list, n_list, k_list = DEFAULT_M, DEFAULT_N, DEFAULT_K
+    m_list = [DEFAULT_M] * DEFAULT_BATCH_SIZE
+    n_list = [DEFAULT_N] * DEFAULT_BATCH_SIZE
+    k_list = [DEFAULT_K] * DEFAULT_BATCH_SIZE
 
     # 1. config 파일에서 로드
     path = config_path or default_config

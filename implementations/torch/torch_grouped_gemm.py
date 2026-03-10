@@ -116,7 +116,7 @@ def run_benchmark(
     warmup: int = 50,
     repeat: int = 100,
 ) -> Tuple[float, float]:
-    """벤치마크 실행. (elapsed_ms, gflops) 반환."""
+    """벤치마크 실행. (elapsed_ms, gflops) 반환. CUDA Event 기반 측정 (cuBLAS와 동일)."""
     group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
 
     for _ in range(warmup):
@@ -124,13 +124,14 @@ def run_benchmark(
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
-    import time
-    start = time.perf_counter()
+    start_ev = torch.cuda.Event(enable_timing=True)
+    end_ev = torch.cuda.Event(enable_timing=True)
+    start_ev.record()
     for _ in range(repeat):
         torch_perf_fn(group_A, group_B)
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    elapsed_ms = (time.perf_counter() - start) / repeat * 1000
+    end_ev.record()
+    torch.cuda.synchronize()
+    elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
 
     flops = sum(2 * m * n * k for m, n, k in zip(m_list, n_list, k_list))
     gflops = flops * 1e-9 / (elapsed_ms / 1000)
@@ -138,9 +139,8 @@ def run_benchmark(
 
 
 if __name__ == "__main__":
-    m_list = [1024, 512, 256, 128]
-    n_list = [1024, 512, 256, 128]
-    k_list = [1024, 512, 256, 128]
+    # 기본값: CUDA config와 동일 (batch_size=8, M=1024, N=4096, K=14336)
+    m_list, n_list, k_list = [1024] * 8, [4096] * 8, [14336] * 8
     warmup, repeat = 50, 100
 
     if load_grouped_sizes and add_grouped_args:
@@ -154,7 +154,7 @@ if __name__ == "__main__":
         if not args.no_config or args.config or args.m or args.n or args.k:
             default_cfg = Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped" / "config.yaml"
             m_list, n_list, k_list = load_grouped_sizes(
-                config_path=args.config if not args.no_config else None,
+                config_path=None if args.no_config else (args.config or default_cfg),
                 m=args.m,
                 n=args.n,
                 k=args.k,

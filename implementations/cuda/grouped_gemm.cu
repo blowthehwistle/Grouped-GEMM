@@ -1,6 +1,41 @@
+#include <fstream>
+#include <sstream>
+#include <vector>
+
 #include "helpers.h"
 #include "runner.cuh"
 #include "nvtx3/nvToolsExt.h"
+
+/**
+ * config 파일에서 M,N,K 로드. 한 줄당 "M N K" (배치 1개).
+ * 반환: batch_size, 또는 -1 (오류)
+ */
+int load_mnk_from_file(const char *path, int **m_list, int **n_list, int **k_list) {
+  std::ifstream f(path);
+  if (!f) return -1;
+  std::vector<int> m_vec, n_vec, k_vec;
+  std::string line;
+  while (std::getline(f, line)) {
+    std::istringstream ss(line);
+    int a, b, c;
+    if (ss >> a >> b >> c) {
+      m_vec.push_back(a);
+      n_vec.push_back(b);
+      k_vec.push_back(c);
+    }
+  }
+  if (m_vec.empty()) return -1;
+  int batch_size = static_cast<int>(m_vec.size());
+  *m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+  *n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+  *k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+  for (int i = 0; i < batch_size; i++) {
+    (*m_list)[i] = m_vec[i];
+    (*n_list)[i] = n_vec[i];
+    (*k_list)[i] = k_vec[i];
+  }
+  return batch_size;
+}
 
 void randomize_matrix_s(int N, float *M) {
   struct timeval time{};
@@ -36,14 +71,15 @@ void set_mnk(int *M, int *N, int *K, const int batch_size, const int *m_value,
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    std::cerr << "Usage: " << argv[0] << " <kernel_number>" << " <<result display option>>"
-              << std::endl;
+  if (argc < 3) {
+    std::cerr << "Usage: " << argv[0] << " <kernel_number> <result_mode> [config_file | batch_size m n k]\n"
+              << "  kernel_number: 0=cuBLAS, 1=GroupedTF32, 2=custom\n"
+              << "  result_mode: p=compact, else=verbose\n"
+              << "  config_file: 한 줄당 'M N K' (배치별 상이한 M,N,K)\n"
+              << "  또는 batch_size m n k (uniform, 모든 배치 동일)\n";
     return EXIT_FAILURE;
   }
   int kernel_number = std::atoi(argv[1]);
-
-  // CudaDeviceInfo();
 
   // create cuBLAS handle
   cublasHandle_t handle;
@@ -55,40 +91,55 @@ int main(int argc, char **argv) {
   // set constants for GEMM
   float alpha = 1.0, beta = 0.0;
 
-  // set the size of matrices
-  long batch_size = 100;
+  long batch_size;
+  int *m_list = nullptr;
+  int *n_list = nullptr;
+  int *k_list = nullptr;
+
+  // Config: config 파일 또는 argv (uniform) 또는 기본값
+  if (argc >= 4) {
+    int loaded = load_mnk_from_file(argv[3], &m_list, &n_list, &k_list);
+    if (loaded > 0) {
+      batch_size = loaded;
+    } else if (argc >= 7) {
+      batch_size = std::atol(argv[3]);
+      int cfg_m = std::atoi(argv[4]);
+      int cfg_n = std::atoi(argv[5]);
+      int cfg_k = std::atoi(argv[6]);
+      m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      for (int i = 0; i < batch_size; i++) {
+        m_list[i] = cfg_m;
+        n_list[i] = cfg_n;
+        k_list[i] = cfg_k;
+      }
+    } else {
+      batch_size = 8;
+      m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      for (int i = 0; i < batch_size; i++) {
+        m_list[i] = 1024;
+        n_list[i] = 4096;
+        k_list[i] = 14336;
+      }
+    }
+  } else {
+    batch_size = 8;
+    m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+    n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+    k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+    for (int i = 0; i < batch_size; i++) {
+      m_list[i] = 1024;
+      n_list[i] = 4096;
+      k_list[i] = 14336;
+    }
+  }
 
   int *A_offset = (int *)malloc(sizeof(int) * (batch_size + 1));
   int *B_offset = (int *)malloc(sizeof(int) * (batch_size + 1));
   int *C_offset = (int *)malloc(sizeof(int) * (batch_size + 1));
-  int *m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  int *n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  int *k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-
-  for (int x = 0; x < 8 * 10; x++) batch_size = 8;
-  int base_seq_len = 1024;
-
-  // batch별 M 값 다르게 할 때 사용하는 코드
-  int x0 = 32 * 0;
-  int x1 = 32 * 0;
-  int x2 = 32 * 0;
-  int x3 = 32 * 0;
-  int x4 = 32 * 0;
-  int x5 = 32 * 0;
-  int x6 = 32 * 0;
-  int x7 = 32 * 0;
-  int m_value[] = {
-      base_seq_len + x0, base_seq_len + x1, base_seq_len + x2, base_seq_len + x3,
-      base_seq_len + x4, base_seq_len + x5, base_seq_len + x6, base_seq_len + x7,
-  };
-  int m_batch_offset[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
-  int n_value[] = {4096};
-  int n_batch_offset[] = {0, 8};
-  int k_value[] = {14336};
-  int k_batch_offset[] = {0, 8};
-
-  set_mnk(m_list, n_list, k_list, batch_size, m_value, m_batch_offset, n_value, n_batch_offset,
-          k_value, k_batch_offset);
 
   printf("      B          M     N     K\n");
   int check_point = 0;
@@ -205,12 +256,21 @@ int main(int argc, char **argv) {
   // copy the result of cuBLAS kernel from device to host for validation
   CHECK_CUDA(cudaMemcpy(C_ref, d_C_ref, size_C_ref * sizeof(float), cudaMemcpyDeviceToHost));
 
+  // kernel 2는 단일 K만 지원. K가 배치별로 다르면 kernel 1로 폴백
+  bool k_uniform = true;
+  for (int i = 1; i < batch_size && k_uniform; i++) {
+    if (k_list[i] != k_list[0]) k_uniform = false;
+  }
+  int effective_kernel = (kernel_number == 2 && !k_uniform) ? 1 : kernel_number;
+  if (kernel_number == 2 && !k_uniform) {
+    std::cerr << "Note: kernel 2 requires uniform K; using kernel 1 (cuBLAS Grouped) instead.\n";
+  }
+
   // kernel to be compared
-  // execute the kernel and calculate execution time
   nvtxRangePushA("Kernel");
   CHECK_CUDA(cudaEventRecord(start));
   for (int i = 0; i < repeat_time; i++) {
-    switch (kernel_number) {
+    switch (effective_kernel) {
       case 0:
         runCublasTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size, A_offset,
                               B_offset, C_offset, alpha, beta);
@@ -276,6 +336,9 @@ int main(int argc, char **argv) {
   free(B);
   free(C);
   free(C_ref);
+  free(m_list);
+  free(n_list);
+  free(k_list);
   CHECK_CUDA(cudaFree(d_A));
   CHECK_CUDA(cudaFree(d_B));
   CHECK_CUDA(cudaFree(d_C));

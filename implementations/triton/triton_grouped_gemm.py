@@ -605,12 +605,14 @@ def run_benchmark(
         triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list))
     torch.cuda.synchronize()
 
-    import time
-    start = time.perf_counter()
+    start_ev = torch.cuda.Event(enable_timing=True)
+    end_ev = torch.cuda.Event(enable_timing=True)
+    start_ev.record()
     for _ in range(repeat):
         triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list))
+    end_ev.record()
     torch.cuda.synchronize()
-    elapsed_ms = (time.perf_counter() - start) / repeat * 1000
+    elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
     flops = sum(2 * m * n * k for m, n, k in zip(m_list, n_list, k_list))
     gflops = flops * 1e-9 / (elapsed_ms / 1000)
     return elapsed_ms, gflops
@@ -642,7 +644,7 @@ if __name__ == "__main__":
     if use_config and _load:
         default_cfg = Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped" / "config.yaml"
         m_list, n_list, k_list = _load(
-            config_path=None if args.no_config else args.config,
+            config_path=None if args.no_config else (args.config or default_cfg),
             m=args.m, n=args.n, k=args.k,
             default_config=default_cfg,
         )

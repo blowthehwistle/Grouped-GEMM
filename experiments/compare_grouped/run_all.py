@@ -2,39 +2,58 @@
 """
 Grouped GEMM 백엔드별 벤치마크 실행 스크립트.
 
-CUDA, Cutlass, PyTorch, Triton 백엔드를 순차 실행하고 결과를 results/benchmark/에 저장합니다.
+CUDA, Cutlass, PyTorch, Triton 백엔드가 동일한 config로 벤치마크 (config.yaml 기준).
 
 Usage:
     python run_all.py [--config config.yaml]
 """
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+CONFIG_DIR = REPO_ROOT / "experiments" / "compare_grouped"
 
 
-def run_cuda_grouped():
-    """CUDA grouped GEMM 실행 (bin/tmain_grouped)"""
+def load_unified_config(config_path):
+    """통합 config 로드. (m_list, n_list, k_list) 반환."""
+    sys.path.insert(0, str(CONFIG_DIR))
+    try:
+        from grouped_config import load_grouped_sizes
+        return load_grouped_sizes(
+            config_path=config_path,
+            default_config=CONFIG_DIR / "config.yaml",
+        )
+    finally:
+        if str(CONFIG_DIR) in sys.path:
+            sys.path.remove(str(CONFIG_DIR))
+
+
+def run_cuda_grouped(config_path=None):
+    """CUDA grouped GEMM 실행 (bin/tmain_grouped). config와 동일한 M,N,K 사용."""
     exe = REPO_ROOT / "bin" / "tmain_grouped"
     if not exe.exists():
         print(f"Warning: {exe} not found. Run 'make grouped' first.")
         return None
+    m_list, n_list, k_list = load_unified_config(config_path)
     out_dir = REPO_ROOT / "results" / "benchmark" / "cuda"
     out_dir.mkdir(parents=True, exist_ok=True)
+    cuda_config_file = out_dir / "grouped_config.txt"
+    with open(cuda_config_file, "w") as f:
+        for m, n, k in zip(m_list, n_list, k_list):
+            f.write(f"{m} {n} {k}\n")
     out_file = out_dir / "grouped_gemm.txt"
+    cmd = [str(exe), "2", "p", str(cuda_config_file.resolve())]
     with open(out_file, "w") as f:
-        # kernel 2 = custom grouped, "p" = print mode
-        subprocess.run([str(exe), "2", "p"], cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT)
+        subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT)
     print(f"CUDA result saved to {out_file}")
     return out_file
 
 
 def run_triton_grouped(config_path=None):
-    """Triton grouped GEMM 벤치마크 실행"""
+    """Triton grouped GEMM 벤치마크 (config와 동일 M,N,K)"""
     script = REPO_ROOT / "implementations" / "triton" / "triton_grouped_gemm.py"
     if not script.exists():
         print(f"Warning: {script} not found.")
@@ -42,10 +61,10 @@ def run_triton_grouped(config_path=None):
     out_dir = REPO_ROOT / "results" / "benchmark" / "triton"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "grouped_gemm.txt"
+    config = config_path or (CONFIG_DIR / "config.yaml")
     try:
-        cmd = [sys.executable, str(script), "--benchmark-only"]
-        if config_path:
-            cmd.extend(["--config", str(config_path)])
+        cmd = [sys.executable, str(script), "--benchmark-only", "--config", str(config),
+               "--repeat", "1000", "--warmup", "50"]
         with open(out_file, "w") as f:
             subprocess.run(
                 cmd,
@@ -65,7 +84,7 @@ def run_triton_grouped(config_path=None):
 
 
 def run_torch_grouped(config_path=None):
-    """PyTorch grouped GEMM 벤치마크 실행"""
+    """PyTorch grouped GEMM 벤치마크 (config와 동일 M,N,K)"""
     script = REPO_ROOT / "implementations" / "torch" / "torch_grouped_gemm.py"
     if not script.exists():
         print(f"Warning: {script} not found.")
@@ -73,10 +92,10 @@ def run_torch_grouped(config_path=None):
     out_dir = REPO_ROOT / "results" / "benchmark" / "torch"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "grouped_gemm.txt"
+    config = config_path or (CONFIG_DIR / "config.yaml")
     try:
-        cmd = [sys.executable, str(script)]
-        if config_path:
-            cmd.extend(["--config", str(config_path)])
+        cmd = [sys.executable, str(script), "--config", str(config),
+               "--repeat", "1000", "--warmup", "50"]
         with open(out_file, "w") as f:
             subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
         print(f"Torch result saved to {out_file}")
@@ -107,7 +126,7 @@ def main():
     results = []
 
     if args.backend in ("cuda", "all"):
-        results.append(("cuda", run_cuda_grouped()))
+        results.append(("cuda", run_cuda_grouped(config_path)))
     if args.backend in ("triton", "all"):
         results.append(("triton", run_triton_grouped(config_path)))
     if args.backend in ("torch", "all"):

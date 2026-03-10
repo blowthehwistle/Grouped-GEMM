@@ -1,6 +1,13 @@
 # Grouped GEMM 비교 실험용 설정
 # CUDA, Cutlass, PyTorch, Triton 백엔드 간 성능 비교
 
+# Grouped GEMM M, N, K 리스트 (각 그룹별 크기)
+# run_all.py 및 각 백엔드 스크립트에서 --config 로 로드
+grouped:
+  m: [1024, 512, 256, 128]
+  n: [1024, 512, 256, 128]
+  k: [1024, 512, 256, 128]
+
 benchmark:
   # 벤치마크할 행렬 크기 (M, N, K)
   sizes:

@@ -33,9 +33,9 @@ def run_cuda_grouped():
     return out_file
 
 
-def run_triton_grouped():
+def run_triton_grouped(config_path=None):
     """Triton grouped GEMM 벤치마크 실행"""
-    script = REPO_ROOT / "implementations" / "triton" / "grouped_gemm.py"
+    script = REPO_ROOT / "implementations" / "triton" / "triton_grouped_gemm.py"
     if not script.exists():
         print(f"Warning: {script} not found.")
         return None
@@ -43,9 +43,12 @@ def run_triton_grouped():
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "grouped_gemm.txt"
     try:
+        cmd = [sys.executable, str(script), "--benchmark-only"]
+        if config_path:
+            cmd.extend(["--config", str(config_path)])
         with open(out_file, "w") as f:
             subprocess.run(
-                [sys.executable, str(script)],
+                cmd,
                 cwd=REPO_ROOT,
                 stdout=f,
                 stderr=subprocess.STDOUT,
@@ -61,10 +64,26 @@ def run_triton_grouped():
         return None
 
 
-def run_torch_grouped():
-    """PyTorch grouped GEMM - TODO: 구현 후 추가"""
-    print("PyTorch grouped GEMM: not implemented yet (placeholder)")
-    return None
+def run_torch_grouped(config_path=None):
+    """PyTorch grouped GEMM 벤치마크 실행"""
+    script = REPO_ROOT / "implementations" / "torch" / "torch_grouped_gemm.py"
+    if not script.exists():
+        print(f"Warning: {script} not found.")
+        return None
+    out_dir = REPO_ROOT / "results" / "benchmark" / "torch"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "grouped_gemm.txt"
+    try:
+        cmd = [sys.executable, str(script)]
+        if config_path:
+            cmd.extend(["--config", str(config_path)])
+        with open(out_file, "w") as f:
+            subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
+        print(f"Torch result saved to {out_file}")
+        return out_file
+    except Exception as e:
+        print(f"Torch benchmark failed: {e}")
+        return None
 
 
 def run_cutlass_grouped():
@@ -75,19 +94,24 @@ def run_cutlass_grouped():
 
 def main():
     parser = argparse.ArgumentParser(description="Run Grouped GEMM benchmarks for all backends")
-    parser.add_argument("--config", type=Path, default=None, help="Config YAML path")
+    parser.add_argument("--config", type=Path, default=None,
+                        help="Config YAML path (grouped.m, grouped.n, grouped.k)")
     parser.add_argument("--backend", choices=["cuda", "triton", "torch", "cutlass", "all"],
                         default="all", help="Which backend to run")
     args = parser.parse_args()
+
+    config_path = args.config
+    if not config_path and (REPO_ROOT / "experiments" / "compare_grouped" / "config.yaml").exists():
+        config_path = REPO_ROOT / "experiments" / "compare_grouped" / "config.yaml"
 
     results = []
 
     if args.backend in ("cuda", "all"):
         results.append(("cuda", run_cuda_grouped()))
     if args.backend in ("triton", "all"):
-        results.append(("triton", run_triton_grouped()))
+        results.append(("triton", run_triton_grouped(config_path)))
     if args.backend in ("torch", "all"):
-        results.append(("torch", run_torch_grouped()))
+        results.append(("torch", run_torch_grouped(config_path)))
     if args.backend in ("cutlass", "all"):
         results.append(("cutlass", run_cutlass_grouped()))
 

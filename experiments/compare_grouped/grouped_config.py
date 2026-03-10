@@ -1,0 +1,143 @@
+"""
+Grouped GEMM 공통 설정 로더.
+
+M, N, K 리스트를 config YAML 또는 CLI 인자로 받아 run_all 스크립트 및
+각 백엔드에서 동일한 설정으로 벤치마크를 실행할 수 있게 합니다.
+
+Usage:
+    # config.yaml 로드
+    m_list, n_list, k_list = load_grouped_sizes(config_path="config.yaml")
+
+    # CLI override
+    m_list, n_list, k_list = load_grouped_sizes(m="1024,512", n="1024,512", k="1024,512")
+
+    # run_all.py
+    python run_all.py --config config.yaml
+    python run_all.py --backend triton --config config.yaml
+
+    # 개별 백엔드
+    python implementations/torch/torch_grouped_gemm.py --config experiments/compare_grouped/config.yaml
+    python implementations/torch/torch_grouped_gemm.py --m 1024,512 --n 1024,512 --k 1024,512
+    python implementations/triton/triton_grouped_gemm.py --benchmark-only --config ...
+"""
+
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+# 기본값 (기존 하드코딩과 동일)
+DEFAULT_M = [1024, 512, 256, 128]
+DEFAULT_N = [1024, 512, 256, 128]
+DEFAULT_K = [1024, 512, 256, 128]
+
+
+def _parse_list(s: str) -> List[int]:
+    """'1024,512,256' 또는 '1024 512 256' -> [1024, 512, 256]"""
+    s = s.replace(",", " ").strip()
+    return [int(x) for x in s.split() if x]
+
+
+def load_from_yaml(path: Path) -> Tuple[List[int], List[int], List[int]]:
+    """config.yaml에서 grouped 설정 로드."""
+    try:
+        import yaml
+    except ImportError:
+        return DEFAULT_M, DEFAULT_N, DEFAULT_K
+
+    if not path.exists():
+        return DEFAULT_M, DEFAULT_N, DEFAULT_K
+
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+
+    grouped = data.get("grouped", {})
+    m_list = grouped.get("m", DEFAULT_M)
+    n_list = grouped.get("n", DEFAULT_N)
+    k_list = grouped.get("k", DEFAULT_K)
+
+    if isinstance(m_list, str):
+        m_list = _parse_list(m_list)
+    if isinstance(n_list, str):
+        n_list = _parse_list(n_list)
+    if isinstance(k_list, str):
+        k_list = _parse_list(k_list)
+
+    return m_list, n_list, k_list
+
+
+def load_grouped_sizes(
+    config_path: Optional[Path] = None,
+    m: Optional[str] = None,
+    n: Optional[str] = None,
+    k: Optional[str] = None,
+    default_config: Optional[Path] = None,
+) -> Tuple[List[int], List[int], List[int]]:
+    """
+    M, N, K 리스트 로드. 우선순위: CLI(m,n,k) > config_path > default_config > 기본값.
+
+    Args:
+        config_path: YAML config 파일 경로
+        m: "1024,512,256,128" 형태의 M 리스트
+        n: N 리스트
+        k: K 리스트
+        default_config: config_path가 없을 때 사용할 기본 config 경로
+
+    Returns:
+        (m_list, n_list, k_list)
+    """
+    m_list, n_list, k_list = DEFAULT_M, DEFAULT_N, DEFAULT_K
+
+    # 1. config 파일에서 로드
+    path = config_path or default_config
+    if path:
+        path = Path(path)
+        if path.is_absolute() or path.exists():
+            m_list, n_list, k_list = load_from_yaml(path)
+        else:
+            # experiments/compare_grouped/config.yaml 기준
+            base = Path(__file__).resolve().parent
+            m_list, n_list, k_list = load_from_yaml(base / path)
+
+    # 2. CLI 인자로 override
+    if m is not None:
+        m_list = _parse_list(m)
+    if n is not None:
+        n_list = _parse_list(n)
+    if k is not None:
+        k_list = _parse_list(k)
+
+    # 검증
+    size = len(m_list)
+    if len(n_list) != size or len(k_list) != size:
+        raise ValueError(
+            f"m, n, k 길이 불일치: m={len(m_list)}, n={len(n_list)}, k={len(k_list)}"
+        )
+
+    return m_list, n_list, k_list
+
+
+def add_grouped_args(parser):
+    """argparse에 grouped sizes 인자 추가."""
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Config YAML 경로 (grouped.m, grouped.n, grouped.k)",
+    )
+    parser.add_argument(
+        "--m",
+        type=str,
+        default=None,
+        help="M 리스트 (예: 1024,512,256,128)",
+    )
+    parser.add_argument(
+        "--n",
+        type=str,
+        default=None,
+        help="N 리스트",
+    )
+    parser.add_argument(
+        "--k",
+        type=str,
+        default=None,
+        help="K 리스트",
+    )

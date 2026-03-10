@@ -1,4 +1,4 @@
-# GEMM CUDA 실험 저장소
+# compare GEMM repository
 
 이 저장소는 CUDA 기반 GEMM 커널을 단계적으로 최적화하고, cuBLAS와 성능 및 정확도를 비교하기 위한 실험 코드 모음입니다.
 
@@ -125,6 +125,53 @@ python experiments/compare_grouped/run_all.py
 
 # 3. 결과 비교
 python experiments/compare_grouped/compare.py
+```
+
+## Grouped GEMM M, N, K 설정 방법
+
+Grouped GEMM의 행렬 크기(M, N, K)는 **config 파일** 또는 **CLI 인자**로 지정합니다. `run_all.py`로 한 번에 실행할 때나, 여러 백엔드를 같은 설정으로 돌릴 때 유용합니다.
+
+### 1. config.yaml 사용
+
+`experiments/compare_grouped/config.yaml`의 `grouped` 섹션에서 M, N, K 리스트를 설정합니다.
+
+```yaml
+grouped:
+  m: [1024, 512, 256, 128]
+  n: [1024, 512, 256, 128]
+  k: [1024, 512, 256, 128]
+```
+
+```bash
+python experiments/compare_grouped/run_all.py --config experiments/compare_grouped/config.yaml
+```
+
+### 2. CLI 인자로 지정
+
+`--m`, `--n`, `--k`로 콤마 구분 리스트를 넘깁니다.
+
+```bash
+python implementations/torch/torch_grouped_gemm.py --m 1024,512,256 --n 1024,512,256 --k 1024,512,256
+python implementations/triton/triton_grouped_gemm.py --benchmark-only --m 1024,512 --n 1024,512 --k 1024,512
+```
+
+### 3. 우선순위
+
+CLI 인자 > config 파일 > 기본값 (`[1024, 512, 256, 128]`)
+
+### 4. Python 코드에서 사용
+
+```python
+# experiments/compare_grouped 기준으로 실행하거나, sys.path에 experiments 추가 후
+from grouped_config import load_grouped_sizes
+
+m_list, n_list, k_list = load_grouped_sizes(
+    config_path="config.yaml",
+    # CLI 스타일 override
+    m="1024,512,256",
+    n="1024,512,256",
+    k="1024,512,256",
+)
 ```
 
 ## 추천 읽기 순서

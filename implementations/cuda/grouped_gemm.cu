@@ -67,6 +67,8 @@ int main(int argc, char **argv) {
 
   for (int x = 0; x < 8 * 10; x++) batch_size = 8;
   int base_seq_len = 1024;
+
+  // batch별 M 값 다르게 할 때 사용하는 코드
   int x0 = 32 * 0;
   int x1 = 32 * 0;
   int x2 = 32 * 0;
@@ -171,7 +173,7 @@ int main(int argc, char **argv) {
       cudaMemcpy(d_C_offset, C_offset, (batch_size + 1) * sizeof(int), cudaMemcpyHostToDevice));
 
   // convert precision from fp32 to tf32
-  convert_to_tf32(d_A, d_B, size_A, size_B);
+  convert_to_tf32(d_A, d_B, size_A, size_B);  // tensor core 활용
 
   // create CUDA event for calculating elapsed time
   float elapsed_time1, elapsed_time2;
@@ -187,6 +189,7 @@ int main(int argc, char **argv) {
 
   CHECK_CUDA(cudaMemset(d_C_ref, 0, size_C_ref * sizeof(float)));
 
+  // baseline
   // execute cuBLAS kernel and calculate execution time
   nvtxRangePushA("cuBLAS");
   CHECK_CUDA(cudaEventRecord(start));
@@ -202,6 +205,7 @@ int main(int argc, char **argv) {
   // copy the result of cuBLAS kernel from device to host for validation
   CHECK_CUDA(cudaMemcpy(C_ref, d_C_ref, size_C_ref * sizeof(float), cudaMemcpyDeviceToHost));
 
+  // kernel to be compared
   // execute the kernel and calculate execution time
   nvtxRangePushA("Kernel");
   CHECK_CUDA(cudaEventRecord(start));

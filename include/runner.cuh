@@ -323,7 +323,7 @@ void runCublasGroupedTF32_with_TC(cublasHandle_t handle, float *A, float *B, flo
   CHECK_CUDA(cudaMemcpy(d_B_array, B_array, batch_size * sizeof(float *), cudaMemcpyHostToDevice));
   CHECK_CUDA(cudaMemcpy(d_C_array, C_array, batch_size * sizeof(float *), cudaMemcpyHostToDevice));
 
-  // Set grouped batched gemm configurations for cublasSgemmGroupedBatched (cuBLAS 12+)
+  // Set grouped batched gemm configurations for cublasGemmGroupedBatchedEx
   cublasOperation_t transa_array[batch_size];
   cublasOperation_t transb_array[batch_size];
   int lda_array[batch_size];
@@ -344,10 +344,11 @@ void runCublasGroupedTF32_with_TC(cublasHandle_t handle, float *A, float *B, flo
     group_size[batch] = 1;
   }
 
-  cublasSgemmGroupedBatched(handle, transa_array, transb_array, m_list, n_list, k_list,
-                            alpha_array, (float const *const *)d_A_array, lda_array,
-                            (float const *const *)d_B_array, ldb_array, beta_array,
-                            (float *const *)d_C_array, ldc_array, batch_size, group_size);
+  cublasGemmGroupedBatchedEx(
+      handle, transa_array, transb_array, m_list, n_list, k_list, alpha_array,
+      (void const *const *)d_A_array, CUDA_R_32F, lda_array, (void const *const *)d_B_array,
+      CUDA_R_32F, ldb_array, beta_array, (void *const *)d_C_array, CUDA_R_32F, ldc_array,
+      batch_size, group_size, CUBLAS_COMPUTE_32F_FAST_TF32);
 
   cudaFree(d_A_array);
   cudaFree(d_B_array);

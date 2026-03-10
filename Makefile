@@ -1,4 +1,5 @@
-CC = nvcc
+CUDA_PATH = /usr/local/cuda-12.5
+CC = $(CUDA_PATH)/bin/nvcc
 
 # implementations/cuda 에서 소스 로드
 CUDA_DIR = implementations/cuda

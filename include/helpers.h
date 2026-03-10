@@ -281,7 +281,7 @@ bool verify_matrix(void *matRef, void *matOut, int *m_list, int *n_list, int bat
       }
       diff = std::fabs(ref_val - out_val) / (std::fabs(ref_val) + 1e-6);  // Avoid division by zero
       // TF32: loop vs grouped API can differ slightly (~0.01%) due to reduction order
-      if (diff > 0.001) {
+      if (diff > 0.0001) {
         printf("Divergence! Should %.6f, Is %.6f (Relative Diff %.6f) at %d, (%d, %d, %d)\n",
                ref_val, out_val, diff, offset + i, batch, i / n, i % n);
         return false;

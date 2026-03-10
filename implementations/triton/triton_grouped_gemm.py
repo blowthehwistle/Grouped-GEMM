@@ -27,11 +27,11 @@ import torch
 import triton
 import triton.language as tl
 
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    return torch.cuda.is_available()
 
 
 def supports_tma():

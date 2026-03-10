@@ -323,27 +323,31 @@ void runCublasGroupedTF32_with_TC(cublasHandle_t handle, float *A, float *B, flo
   CHECK_CUDA(cudaMemcpy(d_B_array, B_array, batch_size * sizeof(float *), cudaMemcpyHostToDevice));
   CHECK_CUDA(cudaMemcpy(d_C_array, C_array, batch_size * sizeof(float *), cudaMemcpyHostToDevice));
 
-  // Set grouped batched gemm configurations
+  // Set grouped batched gemm configurations for cublasSgemmGroupedBatched (cuBLAS 12+)
   cublasOperation_t transa_array[batch_size];
   cublasOperation_t transb_array[batch_size];
-
+  int lda_array[batch_size];
+  int ldb_array[batch_size];
+  int ldc_array[batch_size];
   float alpha_array[batch_size];
   float beta_array[batch_size];
-
   int group_size[batch_size];
 
   for (int batch = 0; batch < batch_size; batch++) {
     transa_array[batch] = CUBLAS_OP_N;
     transb_array[batch] = CUBLAS_OP_N;
+    lda_array[batch] = k_list[batch];   // A(M,K) row-major
+    ldb_array[batch] = n_list[batch];   // B(K,N) row-major
+    ldc_array[batch] = n_list[batch];   // C(M,N) row-major
     alpha_array[batch] = 1.0;
     beta_array[batch] = 0.0;
     group_size[batch] = 1;
   }
 
-  cublasGemmGroupedBatchedEx(
-      handle, transa_array, transb_array, n_list, m_list, k_list, alpha_array, (void **)d_B_array,
-      CUDA_R_32F, n_list, (void **)d_A_array, CUDA_R_32F, k_list, beta_array, (void **)d_C_array,
-      CUDA_R_32F, n_list, batch_size, group_size, CUBLAS_COMPUTE_32F_FAST_TF32);
+  cublasSgemmGroupedBatched(handle, transa_array, transb_array, m_list, n_list, k_list,
+                            alpha_array, (float const *const *)d_A_array, lda_array,
+                            (float const *const *)d_B_array, ldb_array, beta_array,
+                            (float *const *)d_C_array, ldc_array, batch_size, group_size);
 
   cudaFree(d_A_array);
   cudaFree(d_B_array);
@@ -374,52 +378,17 @@ void runCublasGroupedTF16_with_TC(cublasHandle_t handle, __half *A, __half *B, _
                                   int *m_list, int *n_list, int *k_list, int batch_size,
                                   int *A_offset, int *B_offset, int *C_offset, float alpha,
                                   float bet) {
+  // cublasGemmGroupedBatchedEx는 cuBLAS 12+에서만 제공되므로, 호환성을 위해 루프로 cublasGemmEx 사용
   cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
-
-  // Create array for grouped matrices
-  __half *A_array[batch_size], *B_array[batch_size], *C_array[batch_size];
-
   for (int batch = 0; batch < batch_size; batch++) {
-    A_array[batch] = A + A_offset[batch];
-    B_array[batch] = B + B_offset[batch];
-    C_array[batch] = C + C_offset[batch];
+    int m = m_list[batch];
+    int n = n_list[batch];
+    int k = k_list[batch];
+    __half *A_ptr = A + A_offset[batch];
+    __half *B_ptr = B + B_offset[batch];
+    __half *C_ptr = C + C_offset[batch];
+    cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, B_ptr, CUDA_R_16F, n, A_ptr,
+                 CUDA_R_16F, k, &bet, C_ptr, CUDA_R_16F, n, CUBLAS_COMPUTE_32F,
+                 CUBLAS_GEMM_DEFAULT);
   }
-
-  __half **d_A_array = nullptr;
-  __half **d_B_array = nullptr;
-  __half **d_C_array = nullptr;
-
-  CHECK_CUDA(cudaMalloc(&d_A_array, batch_size * sizeof(__half *)));
-  CHECK_CUDA(cudaMalloc(&d_B_array, batch_size * sizeof(__half *)));
-  CHECK_CUDA(cudaMalloc(&d_C_array, batch_size * sizeof(__half *)));
-
-  CHECK_CUDA(cudaMemcpy(d_A_array, A_array, batch_size * sizeof(__half *), cudaMemcpyHostToDevice));
-  CHECK_CUDA(cudaMemcpy(d_B_array, B_array, batch_size * sizeof(__half *), cudaMemcpyHostToDevice));
-  CHECK_CUDA(cudaMemcpy(d_C_array, C_array, batch_size * sizeof(__half *), cudaMemcpyHostToDevice));
-
-  // Set grouped batched gemm configurations
-  cublasOperation_t transa_array[batch_size];
-  cublasOperation_t transb_array[batch_size];
-
-  float alpha_array[batch_size];
-  float beta_array[batch_size];
-
-  int group_size[batch_size];
-
-  for (int batch = 0; batch < batch_size; batch++) {
-    transa_array[batch] = CUBLAS_OP_N;
-    transb_array[batch] = CUBLAS_OP_N;
-    alpha_array[batch] = 1.0;
-    beta_array[batch] = 0.0;
-    group_size[batch] = 1;
-  }
-
-  cublasGemmGroupedBatchedEx(handle, transa_array, transb_array, n_list, m_list, k_list,
-                             alpha_array, (void **)d_B_array, CUDA_R_16F, n_list,
-                             (void **)d_A_array, CUDA_R_16F, k_list, beta_array, (void **)d_C_array,
-                             CUDA_R_16F, n_list, batch_size, group_size, CUBLAS_COMPUTE_32F);
-
-  cudaFree(d_A_array);
-  cudaFree(d_B_array);
-  cudaFree(d_C_array);
 }

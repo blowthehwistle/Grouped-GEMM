@@ -8,7 +8,7 @@ torch._grouped_mm을 사용하여 Triton grouped_gemm과 동일한 인터페이�
 
 import argparse
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -115,7 +115,7 @@ def run_benchmark(
     k_list: List[int],
     warmup: int = 50,
     repeat: int = 100,
-) -> tuple[float, float]:
+) -> Tuple[float, float]:
     """벤치마크 실행. (elapsed_ms, gflops) 반환."""
     group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
 

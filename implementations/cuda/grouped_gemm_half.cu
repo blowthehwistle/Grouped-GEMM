@@ -99,7 +99,6 @@ int main(int argc, char **argv) {
     sum_mat_A_offset += m_list[batch] * k_list[batch];
     sum_mat_B_offset += k_list[batch] * n_list[batch];
     sum_mat_C_offset += m_list[batch] * n_list[batch];
-    // printf("%d %d %d\n", A_offset[batch], B_offset[batch], C_offset[batch]);
   }
 
   // kernel repeat time for averaging the elapsed time

@@ -85,48 +85,6 @@ int main(int argc, char **argv) {
   int k_value[] = {14336};
   int k_batch_offset[] = {0, 8};
 
-  // // HMoE Case
-  // int x = 513;
-  // batch_size = 8;
-  // int m_value[] = {2 * x, 2 * x, x, x, x, x, x, x};
-  // int m_batch_offset[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
-  // int n_value[] = {864, 1056, 1248, 1440, 1632, 1824, 2016, 2208};
-  // int n_batch_offset[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
-  // int k_value[] = {4096};
-  // int k_batch_offset[] = {0, 8};
-
-  // int x = 16 * 28;
-  // int m_value[] = {128 + x, 128 + x, 128 + x, 128 + x, 128 + x};
-  // int m_batch_offset[] = {0, 20, 40, 60, 80, 100};
-  // int n_value[] = {1024};
-  // int n_batch_offset[] = {0, 100};
-  // int k_value[] = {1024};
-  // int k_batch_offset[] = {0, 100};
-
-  // // Evenly distributed M values
-  // int m_value[] = {64, 128, 256, 512, 1024};
-  // int m_batch_offset[] = {0, 20, 40, 60, 80, 100};
-  // int n_value[] = {1024};
-  // int n_batch_offset[] = {0, 100};
-  // int k_value[] = {1024};
-  // int k_batch_offset[] = {0, 100};
-
-  // // // Many large M values
-  // int m_value[] = {64, 128, 256, 512, 1024};
-  // int m_batch_offset[] = {0, 10, 20, 30, 65, 100};
-  // int n_value[] = {1024};
-  // int n_batch_offset[] = {0, 100};
-  // int k_value[] = {1024};
-  // int k_batch_offset[] = {0, 100};
-
-  // // Many small M values
-  // int m_value[] = {64, 128, 256, 512, 1024};
-  // int m_batch_offset[] = {0, 35, 70, 80, 90, 100};
-  // int n_value[] = {1024};
-  // int n_batch_offset[] = {0, 100};
-  // int k_value[] = {1024};
-  // int k_batch_offset[] = {0, 100};
-
   set_mnk(m_list, n_list, k_list, batch_size, m_value, m_batch_offset, n_value, n_batch_offset,
           k_value, k_batch_offset);
 
@@ -154,7 +112,6 @@ int main(int argc, char **argv) {
     sum_mat_A_offset += m_list[batch] * k_list[batch];
     sum_mat_B_offset += k_list[batch] * n_list[batch];
     sum_mat_C_offset += m_list[batch] * n_list[batch];
-    // printf("%d %d %d\n", A_offset[batch], B_offset[batch], C_offset[batch]);
   }
 
   // kernel repeat time for averaging the elapsed time
@@ -301,15 +258,6 @@ int main(int argc, char **argv) {
   // display the performance of each kernels
   if (validation == 1) {
     if (strcmp(argv[2], "p") == 0) {
-      // std::cout << "cuBLAS Execution Time : " << elapsed_time1 / repeat_time << " seconds"
-      //           << std::endl;
-      // std::cout << "cuBLAS Performance : " << gflops_ref << " GFLOPS" << std::endl << std::endl;
-      // std::cout << "Kernel Execution Time : " << elapsed_time2 / repeat_time << " seconds"
-      //           << std::endl;
-      // std::cout << "Kernel Performance : " << gflops_kernel << " GFLOPS" << std::endl <<
-      // std::endl; std::cout << "Relative GFLOPS Performance : " << (gflops_kernel / gflops_ref) *
-      // 100 << "%"
-      //           << std::endl;
       std::cout << elapsed_time1 / repeat_time << "," << elapsed_time2 / repeat_time << ",";
       std::cout << gflops_ref << "," << gflops_kernel << std::endl;
     } else {

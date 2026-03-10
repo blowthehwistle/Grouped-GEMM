@@ -648,6 +648,33 @@ if __name__ == "__main__":
             m=args.m, n=args.n, k=args.k,
             default_config=default_cfg,
         )
+        # Validation: Triton output vs torch.matmul reference
+        group_A, group_B = make_grouped_matrices(m_list, n_list, k_list, dtype=torch.float16)
+        group_C = [torch.empty((m, n), device=DEVICE, dtype=torch.float16)
+                   for m, n, _ in zip(m_list, n_list, k_list)]
+        A_addrs = [a.data_ptr() for a in group_A]
+        B_addrs = [b.data_ptr() for b in group_B]
+        C_addrs = [c.data_ptr() for c in group_C]
+        g_sizes = []
+        g_lds = []
+        for M, N, K in zip(m_list, n_list, k_list):
+            g_sizes += [M, N, K]
+            g_lds += [K, N, N]
+        d_a_ptrs = torch.tensor(A_addrs, device=DEVICE)
+        d_b_ptrs = torch.tensor(B_addrs, device=DEVICE)
+        d_c_ptrs = torch.tensor(C_addrs, device=DEVICE)
+        d_g_sizes = torch.tensor(g_sizes, dtype=torch.int32, device=DEVICE)
+        d_g_lds = torch.tensor(g_lds, dtype=torch.int32, device=DEVICE)
+        triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list))
+        torch.cuda.synchronize()
+        ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
+        for i in range(len(m_list)):
+            assert torch.allclose(
+                group_C[i].float(), ref_out[i].float(),
+                atol=1e-1, rtol=1e-1,
+            ), f"Triton validation failed at batch {i}"
+        print("Triton grouped GEMM validation passed.")
+
         elapsed_ms, gflops = run_benchmark(m_list, n_list, k_list, args.warmup, args.repeat)
         print(f"M,N,K: {m_list}, {n_list}, {k_list}")
         print(f"Triton grouped GEMM: {elapsed_ms:.3f} ms, {gflops:.1f} GFLOPS")

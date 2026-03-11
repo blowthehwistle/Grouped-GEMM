@@ -136,6 +136,9 @@ int main(int argc, char **argv) {
 
   float elapsed_time1, elapsed_time2;
   bool ok = false;
+  int eff = 0;
+  long flops = 0;
+  float gflops_ref = 0.f, gflops_ker = 0.f;
   cudaEvent_t start, stop;
   CHECK_CUDA(cudaEventCreate(&start));
   CHECK_CUDA(cudaEventCreate(&stop));
@@ -154,7 +157,7 @@ int main(int argc, char **argv) {
 
   if (kernel_number == 2) {
     for (int k = 0; k <= 1; k++) {
-      int eff = (k == 0 && !k_uniform) ? 1 : k;
+      eff = (k == 0 && !k_uniform) ? 1 : k;
       nvtxRangePushA((eff == 0) ? "FP16_Loop" : "FP16_Grouped");
       for (int i = 0; i < repeat; i++) {
         if (eff == 0)
@@ -169,9 +172,7 @@ int main(int argc, char **argv) {
     }
     std::cout << "All FP16 kernels (0,1) run for profiling.\n";
     ok = true;
-    goto cleanup;
-  }
-
+  } else {
   nvtxRangePushA("cuBLAS");
   CHECK_CUDA(cudaEventRecord(start));
   for (int i = 0; i < repeat; i++)
@@ -184,7 +185,7 @@ int main(int argc, char **argv) {
 
   CHECK_CUDA(cudaMemcpy(C_ref, d_C_ref, size_C * sizeof(__half), cudaMemcpyDeviceToHost));
 
-  int eff = (kernel_number == 0 && !k_uniform) ? 1 : kernel_number;
+  eff = (kernel_number == 0 && !k_uniform) ? 1 : kernel_number;
   if (kernel_number == 0 && !k_uniform)
     std::cerr << "Note: Kernel 0 requires uniform K; using Kernel 1 (Grouped) instead.\n";
 
@@ -209,11 +210,11 @@ int main(int argc, char **argv) {
   ok = verify_matrix(C_ref, C, m_list, n_list, batch_size);
   elapsed_time1 /= 1000.f;
   elapsed_time2 /= 1000.f;
-  long flops = 0;
+  flops = 0;
   for (int b = 0; b < batch_size; b++)
     flops += 2L * m_list[b] * n_list[b] * k_list[b];
-  float gflops_ref = (repeat * flops * 1e-9f) / elapsed_time1;
-  float gflops_ker = (repeat * flops * 1e-9f) / elapsed_time2;
+  gflops_ref = (repeat * flops * 1e-9f) / elapsed_time1;
+  gflops_ker = (repeat * flops * 1e-9f) / elapsed_time2;
 
   std::cout << (ok ? "Result is correct\n" : "Result is different\n");
 
@@ -225,8 +226,8 @@ int main(int argc, char **argv) {
     std::cout << "  Kernel (0/1):                " << (t_ker * 1000) << " ms/iter, " << gflops_ker << " GFLOPS\n";
     std::cout << "  [raw] " << t_ref << "," << t_ker << "," << gflops_ref << "," << gflops_ker << "\n";
   }
+  }
 
-cleanup:
   free(A);
   free(B);
   free(C);

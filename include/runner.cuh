@@ -380,17 +380,58 @@ void runCublasGroupedTF16_with_TC(cublasHandle_t handle, __half *A, __half *B, _
                                   int *m_list, int *n_list, int *k_list, int batch_size,
                                   int *A_offset, int *B_offset, int *C_offset, float alpha,
                                   float bet) {
-  // cublasGemmGroupedBatchedEx는 cuBLAS 12+에서만 제공되므로, 호환성을 위해 루프로 cublasGemmEx 사용
   cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
+
+  // cuBLAS column-major; same layout as TF32: first=B, second=A, m_api=N, n_api=M
+  __half *A_array[batch_size], *B_array[batch_size], *C_array[batch_size];
+  int m_api[batch_size], n_api[batch_size];
+  int lda_api[batch_size], ldb_api[batch_size], ldc_api[batch_size];
+
   for (int batch = 0; batch < batch_size; batch++) {
-    int m = m_list[batch];
-    int n = n_list[batch];
-    int k = k_list[batch];
-    __half *A_ptr = A + A_offset[batch];
-    __half *B_ptr = B + B_offset[batch];
-    __half *C_ptr = C + C_offset[batch];
-    cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, B_ptr, CUDA_R_16F, n, A_ptr,
-                 CUDA_R_16F, k, &bet, C_ptr, CUDA_R_16F, n, CUBLAS_COMPUTE_32F,
-                 CUBLAS_GEMM_DEFAULT);
+    A_array[batch] = A + A_offset[batch];
+    B_array[batch] = B + B_offset[batch];
+    C_array[batch] = C + C_offset[batch];
+    m_api[batch] = n_list[batch];
+    n_api[batch] = m_list[batch];
+    lda_api[batch] = n_list[batch];
+    ldb_api[batch] = k_list[batch];
+    ldc_api[batch] = n_list[batch];
   }
+
+  __half **d_B_array = nullptr;
+  __half **d_A_array = nullptr;
+  __half **d_C_array = nullptr;
+
+  CHECK_CUDA(cudaMalloc(&d_B_array, batch_size * sizeof(__half *)));
+  CHECK_CUDA(cudaMalloc(&d_A_array, batch_size * sizeof(__half *)));
+  CHECK_CUDA(cudaMalloc(&d_C_array, batch_size * sizeof(__half *)));
+
+  CHECK_CUDA(cudaMemcpy(d_B_array, B_array, batch_size * sizeof(__half *), cudaMemcpyHostToDevice));
+  CHECK_CUDA(cudaMemcpy(d_A_array, A_array, batch_size * sizeof(__half *), cudaMemcpyHostToDevice));
+  CHECK_CUDA(cudaMemcpy(d_C_array, C_array, batch_size * sizeof(__half *), cudaMemcpyHostToDevice));
+
+  cublasOperation_t transa_array[batch_size];
+  cublasOperation_t transb_array[batch_size];
+  float alpha_array[batch_size];
+  float beta_array[batch_size];
+  int group_size[batch_size];
+
+  for (int batch = 0; batch < batch_size; batch++) {
+    transa_array[batch] = CUBLAS_OP_N;
+    transb_array[batch] = CUBLAS_OP_N;
+    alpha_array[batch] = 1.0f;
+    beta_array[batch] = 0.0f;
+    group_size[batch] = 1;
+  }
+
+  cublasGemmGroupedBatchedEx(
+      handle, transa_array, transb_array, m_api, n_api, k_list, alpha_array,
+      (void const *const *)d_B_array, CUDA_R_16F, lda_api,
+      (void const *const *)d_A_array, CUDA_R_16F, ldb_api,
+      beta_array, (void *const *)d_C_array, CUDA_R_16F, ldc_api,
+      batch_size, group_size, CUBLAS_COMPUTE_32F);
+
+  cudaFree(d_B_array);
+  cudaFree(d_A_array);
+  cudaFree(d_C_array);
 }

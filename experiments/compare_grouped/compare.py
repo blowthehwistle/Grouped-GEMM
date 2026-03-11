@@ -11,6 +11,7 @@ Usage:
 import argparse
 import re
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BENCHMARK_DIR = REPO_ROOT / "results" / "benchmark"
@@ -19,7 +20,7 @@ BENCHMARK_DIR = REPO_ROOT / "results" / "benchmark"
 KERNEL_NAMES = {0: "cuBLAS Loop", 1: "cuBLAS Grouped API", 2: "Custom Double Buffering"}
 
 
-def _parse_cuda(content: str) -> tuple[dict[str, tuple[float, float]] | None, str | None]:
+def _parse_cuda(content: str) -> Tuple[Optional[Dict[str, Tuple[float, float]]], Optional[str]]:
     """CUDA 결과 파싱. (backend_name -> (ms, gflops)) dict, config_str 반환."""
     config = None
     results = {}
@@ -44,7 +45,7 @@ def _parse_cuda(content: str) -> tuple[dict[str, tuple[float, float]] | None, st
     return results if results else None, config
 
 
-def _parse_torch(content: str) -> tuple[float, float] | None:
+def _parse_torch(content: str) -> Optional[Tuple[float, float]]:
     """Torch: 'Torch grouped GEMM: X ms, Y GFLOPS' 파싱."""
     m = re.search(r"Torch grouped GEMM:\s*([\d.]+)\s*ms,\s*([\d.]+)\s*GFLOPS", content)
     if m:
@@ -52,11 +53,24 @@ def _parse_torch(content: str) -> tuple[float, float] | None:
     return None
 
 
-def _parse_triton(content: str) -> tuple[float, float] | None:
+def _parse_triton(content: str) -> Optional[Tuple[float, float]]:
     """Triton: 'Triton grouped GEMM: X ms, Y GFLOPS' 파싱."""
     m = re.search(r"Triton grouped GEMM:\s*([\d.]+)\s*ms,\s*([\d.]+)\s*GFLOPS", content)
     if m:
         return float(m.group(1)), float(m.group(2))
+    return None
+
+
+def _parse_cutlass(content: str) -> Optional[Tuple[float, float]]:
+    """Cutlass: 'Cutlass grouped GEMM: X ms, Y GFLOPS' 또는 [raw] 0,t,0,gflops 파싱."""
+    m = re.search(r"Cutlass grouped GEMM:\s*([\d.]+)\s*ms,\s*([\d.]+)\s*GFLOPS", content)
+    if m:
+        return float(m.group(1)), float(m.group(2))
+    m = re.search(r"\[raw\]\s+[\d.]+,([\d.]+),[\d.]+,([\d.]+)", content)
+    if m:
+        t_sec = float(m.group(1))
+        gflops = float(m.group(2))
+        return t_sec * 1000, gflops
     return None
 
 
@@ -92,11 +106,20 @@ def load_and_parse():
             if parsed:
                 ms, gflops = parsed
                 rows.append(("Triton", ms, gflops))
+        elif backend == "cutlass":
+            parsed = _parse_cutlass(content)
+            if parsed:
+                ms, gflops = parsed
+                rows.append(("Cutlass", ms, gflops))
+            if not config_str and "Batch size:" in content:
+                m = re.search(r"Batch size: (\d+)\nShapes: (.+)", content)
+                if m:
+                    config_str = f"Batch size: {m.group(1)}, Shapes: {m.group(2).strip()}"
 
     return config_str, rows
 
 
-def format_unified_report(config_str: str | None, rows: list) -> str:
+def format_unified_report(config_str: Optional[str], rows: List) -> str:
     """통일된 형식 리포트 문자열 생성."""
     lines = [
         "=== Grouped GEMM Benchmark ===",

@@ -137,10 +137,29 @@ def run_torch_grouped(config_path=None):
         return None
 
 
-def run_cutlass_grouped():
-    """Cutlass grouped GEMM - TODO: 구현 후 추가"""
-    print("Cutlass grouped GEMM: not implemented yet (placeholder)")
-    return None
+def run_cutlass_grouped(config_path=None):
+    """Cutlass grouped GEMM (bin/tmain_cutlass_grouped). CUDA와 동일 config 사용."""
+    exe = REPO_ROOT / "bin" / "tmain_cutlass_grouped"
+    if not exe.exists():
+        print("Warning: Cutlass binary not found. Run 'make cutlass_grouped' first (requires CUTLASS_ROOT).")
+        return None
+    m_list, n_list, k_list = load_unified_config(config_path)
+    out_dir = REPO_ROOT / "results" / "benchmark" / "cutlass"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    config_file = out_dir / "grouped_config.txt"
+    with open(config_file, "w") as f:
+        for m, n, k in zip(m_list, n_list, k_list):
+            f.write(f"{m} {n} {k}\n")
+    out_file = out_dir / "grouped_gemm.txt"
+    try:
+        cmd = [str(exe), str(config_file.resolve()), "p"]
+        with open(out_file, "w") as f:
+            subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
+        print(f"Cutlass result saved to {out_file}")
+        return out_file
+    except Exception as e:
+        print(f"Cutlass benchmark failed: {e}")
+        return None
 
 
 def main():
@@ -166,7 +185,7 @@ def main():
     if args.backend in ("torch", "all"):
         results.append(("torch", run_torch_grouped(config_path)))
     if args.backend in ("cutlass", "all"):
-        results.append(("cutlass", run_cutlass_grouped()))
+        results.append(("cutlass", run_cutlass_grouped(config_path)))
 
     success = sum(1 for _, r in results if r is not None)
     print(f"\nCompleted: {success}/{len(results)} backends")

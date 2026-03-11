@@ -31,8 +31,15 @@ def load_unified_config(config_path):
             sys.path.remove(str(CONFIG_DIR))
 
 
+KERNEL_NAMES = {
+    0: "cuBLAS Loop",
+    1: "cuBLAS Grouped API",
+    2: "Custom Double Buffering",
+}
+
+
 def run_cuda_grouped(config_path=None):
-    """CUDA grouped GEMM 실행 (bin/tmain_grouped). config와 동일한 M,N,K 사용."""
+    """CUDA grouped GEMM 실행 (bin/tmain_grouped). Kernel 0,1,2 모두 실행."""
     exe = REPO_ROOT / "bin" / "tmain_grouped"
     if not exe.exists():
         print(f"Warning: {exe} not found. Run 'make grouped' first.")
@@ -44,11 +51,36 @@ def run_cuda_grouped(config_path=None):
     with open(cuda_config_file, "w") as f:
         for m, n, k in zip(m_list, n_list, k_list):
             f.write(f"{m} {n} {k}\n")
+
     out_file = out_dir / "grouped_gemm.txt"
-    cmd = [str(exe), "2", "p", str(cuda_config_file.resolve())]
+    lines = [
+        "=== CUDA Grouped GEMM Benchmark ===",
+        f"Batch size: {len(m_list)}",
+        f"Shapes: M={list(m_list)}, N={list(n_list)}, K={list(k_list)}",
+        "",
+    ]
+
+    for kernel_num in (0, 1, 2):
+        section = f"--- Kernel {kernel_num} ({KERNEL_NAMES[kernel_num]}) ---"
+        lines.append(section)
+        cmd = [str(exe), str(kernel_num), "p", str(cuda_config_file.resolve())]
+        result = subprocess.run(
+            cmd,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        out = (result.stdout or "") + (result.stderr or "")
+        lines.append(out.rstrip())
+        if result.returncode != 0:
+            lines.append(f"[Kernel {kernel_num} failed with exit code {result.returncode}]")
+        lines.append("")
+
     with open(out_file, "w") as f:
-        subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT)
-    print(f"CUDA result saved to {out_file}")
+        f.write("\n".join(lines))
+
+    print(f"CUDA result saved to {out_file} (kernels 0, 1, 2)")
     return out_file
 
 

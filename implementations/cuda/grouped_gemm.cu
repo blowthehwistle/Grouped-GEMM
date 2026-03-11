@@ -311,10 +311,10 @@ int main(int argc, char **argv) {
   // validate kernel result
   bool validation;
   if (!verify_matrix(C_ref, C, m_list, n_list, batch_size)) {
-    validation = 1;
+    validation = 0;  // verification failed
     std::cout << "Result is different" << std::endl;
   } else {
-    validation = 1;
+    validation = 1;  // verification passed
     std::cout << "Result is correct" << std::endl;
   }
 

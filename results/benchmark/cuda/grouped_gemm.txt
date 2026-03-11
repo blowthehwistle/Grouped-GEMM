@@ -1,0 +1,18 @@
+=== CUDA Grouped GEMM Benchmark ===
+Batch size: 4
+Shapes: M=[8192, 4096, 2048, 2048], N=[8192, 4096, 2048, 2048], K=[2048, 2048, 2048, 2048]
+
+--- Kernel 0 (cuBLAS Loop) ---
+Result is correct
+--- Performance ---
+  [raw] 0.0283036,0.0284069,13353.7,13305.1
+
+--- Kernel 1 (cuBLAS Grouped API) ---
+Result is correct
+--- Performance ---
+  [raw] 0.0284092,0.0303688,13304.1,12445.6
+
+--- Kernel 2 (Custom Double Buffering) ---
+Result is correct
+--- Performance ---
+  [raw] 0.028407,0.0373664,13305.1,10114.9

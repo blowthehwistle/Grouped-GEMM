@@ -149,6 +149,8 @@ def main():
                         help="Config YAML path (grouped.m, grouped.n, grouped.k)")
     parser.add_argument("--backend", choices=["cuda", "triton", "torch", "cutlass", "all"],
                         default="all", help="Which backend to run")
+    parser.add_argument("--no-compare", action="store_true",
+                        help="Skip printing unified comparison at the end")
     args = parser.parse_args()
 
     config_path = args.config
@@ -168,6 +170,19 @@ def main():
 
     success = sum(1 for _, r in results if r is not None)
     print(f"\nCompleted: {success}/{len(results)} backends")
+
+    if not args.no_compare and success > 0:
+        sys.path.insert(0, str(CONFIG_DIR))
+        try:
+            from compare import load_and_parse, format_unified_report
+            config_str, rows = load_and_parse()
+            print("\n" + format_unified_report(config_str, rows))
+        except ImportError:
+            pass
+        finally:
+            if str(CONFIG_DIR) in sys.path:
+                sys.path.remove(str(CONFIG_DIR))
+
     return 0 if success > 0 else 1
 
 

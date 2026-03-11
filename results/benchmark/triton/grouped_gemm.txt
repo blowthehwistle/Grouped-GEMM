@@ -1,0 +1,3 @@
+Triton grouped GEMM validation passed.
+M,N,K: [8192, 4096, 2048, 2048], [8192, 4096, 2048, 2048], [2048, 2048, 2048, 2048]
+Triton grouped GEMM: 25.304 ms, 14936.9 GFLOPS

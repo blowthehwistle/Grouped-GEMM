@@ -1,26 +1,6 @@
-"""
-Grouped GEMM 공통 설정 로더.
+"""Grouped GEMM M,N,K 설정 로더. config.yaml 또는 CLI로 로드."""
 
-M, N, K 리스트를 config YAML 또는 CLI 인자로 받아 run_all 스크립트 및
-각 백엔드에서 동일한 설정으로 벤치마크를 실행할 수 있게 합니다.
-
-Usage:
-    # config.yaml 로드
-    m_list, n_list, k_list = load_grouped_sizes(config_path="config.yaml")
-
-    # CLI override
-    m_list, n_list, k_list = load_grouped_sizes(m="1024,512", n="1024,512", k="1024,512")
-
-    # run_all.py
-    python run_all.py --config config.yaml
-    python run_all.py --backend triton --config config.yaml
-
-    # 개별 백엔드
-    python implementations/torch/torch_grouped_gemm.py --config experiments/compare_grouped/config.yaml
-    python implementations/torch/torch_grouped_gemm.py --m 1024,512 --n 1024,512 --k 1024,512
-    python implementations/triton/triton_grouped_gemm.py --benchmark-only --config ...
-"""
-
+import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -48,13 +28,16 @@ def load_from_yaml(path: Path) -> Tuple[List[int], List[int], List[int]]:
     try:
         import yaml
     except ImportError:
+        print("grouped_config: PyYAML not installed, using defaults (1024,4096,14336 x8)", file=sys.stderr)
         return (
             [DEFAULT_M] * DEFAULT_BATCH_SIZE,
             [DEFAULT_N] * DEFAULT_BATCH_SIZE,
             [DEFAULT_K] * DEFAULT_BATCH_SIZE,
         )
 
+    path = Path(path)
     if not path.exists():
+        print(f"grouped_config: Config file not found: {path.resolve()}, using defaults (1024,4096,14336 x8)", file=sys.stderr)
         return (
             [DEFAULT_M] * DEFAULT_BATCH_SIZE,
             [DEFAULT_N] * DEFAULT_BATCH_SIZE,
@@ -115,11 +98,12 @@ def load_grouped_sizes(
     if path:
         path = Path(path)
         if path.is_absolute() or path.exists():
-            m_list, n_list, k_list = load_from_yaml(path)
+            actual_path = path
         else:
             # experiments/compare_grouped/config.yaml 기준
             base = Path(__file__).resolve().parent
-            m_list, n_list, k_list = load_from_yaml(base / path)
+            actual_path = base / path
+        m_list, n_list, k_list = load_from_yaml(actual_path)
 
     # 2. CLI 인자로 override
     if m is not None:

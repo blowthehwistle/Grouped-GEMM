@@ -1,41 +1,7 @@
-#include <fstream>
-#include <sstream>
-#include <vector>
-
+#include "config_io.h"
 #include "helpers.h"
 #include "runner.cuh"
 #include "nvtx3/nvToolsExt.h"
-
-/**
- * config 파일에서 M,N,K 로드. 한 줄당 "M N K" (배치 1개).
- * 반환: batch_size, 또는 -1 (오류)
- */
-int load_mnk_from_file(const char *path, int **m_list, int **n_list, int **k_list) {
-  std::ifstream f(path);
-  if (!f) return -1;
-  std::vector<int> m_vec, n_vec, k_vec;
-  std::string line;
-  while (std::getline(f, line)) {
-    std::istringstream ss(line);
-    int a, b, c;
-    if (ss >> a >> b >> c) {
-      m_vec.push_back(a);
-      n_vec.push_back(b);
-      k_vec.push_back(c);
-    }
-  }
-  if (m_vec.empty()) return -1;
-  int batch_size = static_cast<int>(m_vec.size());
-  *m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  *n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  *k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  for (int i = 0; i < batch_size; i++) {
-    (*m_list)[i] = m_vec[i];
-    (*n_list)[i] = n_vec[i];
-    (*k_list)[i] = k_vec[i];
-  }
-  return batch_size;
-}
 
 void randomize_matrix_s(int N, float *M) {
   struct timeval time{};
@@ -73,7 +39,7 @@ void set_mnk(int *M, int *N, int *K, const int batch_size, const int *m_value,
 int main(int argc, char **argv) {
   if (argc < 3) {
     std::cerr << "Usage: " << argv[0] << " <kernel_number> <result_mode> [config_file | batch_size m n k]\n"
-              << "  kernel_number: 0=cuBLAS, 1=GroupedTF32, 2=custom\n"
+              << "  kernel_number: 0=cuBLAS, 1=GroupedTF32, 2=custom, 3=all (for Nsight profiling)\n"
               << "  result_mode: p=compact, else=verbose\n"
               << "  config_file: 한 줄당 'M N K' (배치별 상이한 M,N,K)\n"
               << "  또는 batch_size m n k (uniform, 모든 배치 동일)\n";
@@ -234,16 +200,17 @@ int main(int argc, char **argv) {
   CHECK_CUDA(cudaEventCreate(&start));
   CHECK_CUDA(cudaEventCreate(&stop));
 
-  // warming up the device for 50 times
-  for (int i = 0; i < 50; i++)
+  // warming up the device for 50 times (skip when profiling all kernels)
+  const int warmup = (kernel_number == 3) ? 2 : 50;
+  for (int i = 0; i < warmup; i++)
     runCublasTF32_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list, batch_size, A_offset,
                           B_offset, C_offset, alpha, beta);
   cudaDeviceSynchronize();
 
   CHECK_CUDA(cudaMemset(d_C_ref, 0, size_C_ref * sizeof(float)));
 
-  // baseline
-  // execute cuBLAS kernel and calculate execution time
+  // baseline (skip when kernel_number==3, profiling mode)
+  if (kernel_number != 3) {
   nvtxRangePushA("cuBLAS");
   CHECK_CUDA(cudaEventRecord(start));
   for (int i = 0; i < repeat_time; i++)
@@ -254,55 +221,86 @@ int main(int argc, char **argv) {
   CHECK_CUDA(cudaEventSynchronize(stop));
   CHECK_CUDA(cudaEventElapsedTime(&elapsed_time1, start, stop));
   nvtxRangePop();
-
-  // copy the result of cuBLAS kernel from device to host for validation
   CHECK_CUDA(cudaMemcpy(C_ref, d_C_ref, size_C_ref * sizeof(float), cudaMemcpyDeviceToHost));
+  }
 
   // kernel 2는 단일 K만 지원. K가 배치별로 다르면 kernel 1로 폴백
   bool k_uniform = true;
   for (int i = 1; i < batch_size && k_uniform; i++) {
     if (k_list[i] != k_list[0]) k_uniform = false;
   }
-  int effective_kernel = (kernel_number == 2 && !k_uniform) ? 1 : kernel_number;
-  if (kernel_number == 2 && !k_uniform) {
-    std::cerr << "Note: kernel 2 requires uniform K; using kernel 1 (cuBLAS Grouped) instead.\n";
-  }
 
-  // kernel to be compared
-  nvtxRangePushA("Kernel");
-  CHECK_CUDA(cudaEventRecord(start));
-  for (int i = 0; i < repeat_time; i++) {
-    switch (effective_kernel) {
-      case 0:
-        runCublasTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size, A_offset,
-                              B_offset, C_offset, alpha, beta);
-        break;
-      case 1:
-        runCublasGroupedTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
-                                     A_offset, B_offset, C_offset, alpha, beta);
-        break;
-      case 2:
-        run_double_buffering_tf_grouped(d_A, d_B, d_C, m_list, n_list, k_list[0], batch_size,
-                                        A_offset, B_offset, C_offset, d_m_list, d_n_list,
-                                        d_A_offset, d_B_offset, d_C_offset, alpha, beta);
-        break;
-      default:
-        std::cerr << "Invalid kernel number." << std::endl;
-        return EXIT_FAILURE;
+  if (kernel_number == 3) {
+    // mode 3: run all kernels sequentially for Nsight profiling (single report)
+    const int prof_repeat = 5;
+    for (int k = 0; k <= 2; k++) {
+      int eff = (k == 2 && !k_uniform) ? 1 : k;
+      nvtxRangePushA((eff == 0) ? "cuBLAS_Loop" : (eff == 1) ? "cuBLAS_Grouped" : "Custom");
+      for (int i = 0; i < prof_repeat; i++) {
+        switch (eff) {
+          case 0:
+            runCublasTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
+                                  A_offset, B_offset, C_offset, alpha, beta);
+            break;
+          case 1:
+            runCublasGroupedTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
+                                         A_offset, B_offset, C_offset, alpha, beta);
+            break;
+          case 2:
+            run_double_buffering_tf_grouped(d_A, d_B, d_C, m_list, n_list, k_list[0], batch_size,
+                                            A_offset, B_offset, C_offset, d_m_list, d_n_list,
+                                            d_A_offset, d_B_offset, d_C_offset, alpha, beta);
+            break;
+        }
+      }
+      nvtxRangePop();
+      CHECK_CUDA(cudaDeviceSynchronize());
     }
+    std::cout << "All kernels (0,1,2) run for profiling.\n";
+    elapsed_time1 = elapsed_time2 = 0;  // skip GFLOPS output
+  } else {
+    int effective_kernel = (kernel_number == 2 && !k_uniform) ? 1 : kernel_number;
+    if (kernel_number == 2 && !k_uniform) {
+      std::cerr << "Note: kernel 2 requires uniform K; using kernel 1 (cuBLAS Grouped) instead.\n";
+    }
+
+    // kernel to be compared
+    nvtxRangePushA("Kernel");
+    CHECK_CUDA(cudaEventRecord(start));
+    for (int i = 0; i < repeat_time; i++) {
+      switch (effective_kernel) {
+        case 0:
+          runCublasTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size, A_offset,
+                                B_offset, C_offset, alpha, beta);
+          break;
+        case 1:
+          runCublasGroupedTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
+                                       A_offset, B_offset, C_offset, alpha, beta);
+          break;
+        case 2:
+          run_double_buffering_tf_grouped(d_A, d_B, d_C, m_list, n_list, k_list[0], batch_size,
+                                          A_offset, B_offset, C_offset, d_m_list, d_n_list,
+                                          d_A_offset, d_B_offset, d_C_offset, alpha, beta);
+          break;
+        default:
+          std::cerr << "Invalid kernel number." << std::endl;
+          return EXIT_FAILURE;
+      }
+    }
+    CHECK_CUDA(cudaEventRecord(stop));
+    CHECK_CUDA(cudaEventSynchronize(start));
+    CHECK_CUDA(cudaEventSynchronize(stop));
+    CHECK_CUDA(cudaEventElapsedTime(&elapsed_time2, start, stop));
+    nvtxRangePop();
+
+    // copy the result of the kernel from device to host for validation
+    CHECK_CUDA(cudaMemcpy(C, d_C, sizeof(float) * size_C, cudaMemcpyDeviceToHost));
   }
-  CHECK_CUDA(cudaEventRecord(stop));
-  CHECK_CUDA(cudaEventSynchronize(start));
-  CHECK_CUDA(cudaEventSynchronize(stop));
-  CHECK_CUDA(cudaEventElapsedTime(&elapsed_time2, start, stop));
-  nvtxRangePop();
 
-  // copy the result of the kernel from device to host for validation
-  CHECK_CUDA(cudaMemcpy(C, d_C, sizeof(float) * size_C, cudaMemcpyDeviceToHost));
-
-  // calculate the kernel's GFLOPS
+  // calculate the kernel's GFLOPS (skip when kernel_number==3)
   elapsed_time1 /= 1000;
   elapsed_time2 /= 1000;
+  if (kernel_number != 3) {
   long flops = 0;
   for (int batch = 0; batch < batch_size; batch++) {
     flops += (long)2 * m_list[batch] * n_list[batch] * k_list[batch];
@@ -339,6 +337,7 @@ int main(int argc, char **argv) {
       std::cout << "Kernel time (s):  " << t_kernel << std::endl;
       std::cout << "Kernel GFLOPS:    " << gflops_kernel << std::endl;
     }
+  }
   }
 
   free(A);

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-Grouped GEMM 백엔드별 벤치마크 실행 스크립트.
+Grouped GEMM 백엔드별 벤치마크 실행.
 
-CUDA, Cutlass, PyTorch, Triton 백엔드가 동일한 config로 벤치마크 (config.yaml 기준).
-
-Usage:
-    python run_all.py [--config config.yaml]
+CUDA, Cutlass, PyTorch, Triton 백엔드가 config.yaml로 동일 M,N,K 벤치마크.
+--nsight 시 Nsight Compute로 프로파일링 (.ncu-rep).
 """
 
 import argparse
@@ -16,9 +14,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = REPO_ROOT / "experiments" / "compare_grouped"
 
+KERNEL_NAMES = {0: "cuBLAS Loop", 1: "cuBLAS Grouped API", 2: "Custom Double Buffering"}
+FP16_KERNEL_NAMES = {0: "CUDA FP16 Loop", 1: "CUDA FP16 Grouped"}
+DEFAULT_SHAPES = ([1024] * 8, [4096] * 8, [14336] * 8)
+
 
 def load_unified_config(config_path):
-    """통합 config 로드. (m_list, n_list, k_list) 반환."""
+    """config 로드 → (m_list, n_list, k_list)"""
     sys.path.insert(0, str(CONFIG_DIR))
     try:
         from grouped_config import load_grouped_sizes
@@ -31,186 +33,231 @@ def load_unified_config(config_path):
             sys.path.remove(str(CONFIG_DIR))
 
 
-KERNEL_NAMES = {
-    0: "cuBLAS Loop",
-    1: "cuBLAS Grouped API",
-    2: "Custom Double Buffering",
-}
-FP16_KERNEL_NAMES = {0: "CUDA FP16 Loop", 1: "CUDA FP16 Grouped"}
+def _wrap_ncu(cmd, rep_path, ncu_extra=None, timeout=600):
+    """cmd를 ncu로 감싸 실행."""
+    ncu_cmd = ["ncu", "-o", str(rep_path), "-c", "50"]
+    if ncu_extra:
+        ncu_cmd.extend(ncu_extra.split())
+    ncu_cmd.extend(["--"] + cmd)
+    return subprocess.run(ncu_cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
 
 
-def run_cuda_grouped(config_path=None):
-    """CUDA grouped GEMM 실행 (bin/tmain_grouped). Kernel 0,1,2 모두 실행."""
+def _run_cmd(cmd, capture=True, timeout=120):
+    """subprocess 실행. capture 시 (stdout+stderr) 반환."""
+    r = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=capture, text=True, timeout=timeout)
+    return (r.stdout or "") + (r.stderr or ""), r.returncode
+
+
+def _warn_if_config_fallback(out, label=""):
+    if "Could not load config" in out or "using defaults (1024,4096,14336" in out:
+        print(f"[{label}] WARNING: Config file open failed, binary used defaults", flush=True)
+
+
+def _run_backend_with_nsight(cmd, out_file, rep_path, label, ncu_extra=None):
+    """cmd를 ncu로 프로파일 후 결과를 out_file에 저장."""
+    print(f"[Nsight] Profiling {label} -> {rep_path}.ncu-rep", flush=True)
+    r = _wrap_ncu(cmd, rep_path, ncu_extra, timeout=600)
+    out = (r.stdout or "") + (r.stderr or "")
+    with open(out_file, "w") as f:
+        f.write(out)
+    ok = r.returncode == 0
+    print(f"[Nsight] {label} {'done' if ok else f'FAILED (exit {r.returncode})'}", flush=True)
+    return ok
+
+
+def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
     exe = REPO_ROOT / "bin" / "tmain_grouped"
+    exe_half = REPO_ROOT / "bin" / "tmain_grouped_half"
     if not exe.exists():
-        print(f"Warning: {exe} not found. Run 'make grouped' first.")
+        print("Warning: tmain_grouped not found. Run 'make grouped' first.")
         return None
+
+    config_resolved = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    print(f"Config: {config_resolved}", flush=True)
     m_list, n_list, k_list = load_unified_config(config_path)
+    shapes = list(zip(m_list, n_list, k_list))
+    print(f"Loaded shapes: {shapes[:4]}{'...' if len(shapes) > 4 else ''}", flush=True)
+    if (m_list, n_list, k_list) == DEFAULT_SHAPES:
+        print("WARNING: Loaded defaults - config not found or PyYAML missing", flush=True)
+
     out_dir = REPO_ROOT / "results" / "benchmark" / "cuda"
+    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
-    cuda_config_file = out_dir / "grouped_config.txt"
-    with open(cuda_config_file, "w") as f:
+    if nsight:
+        nsight_dir.mkdir(parents=True, exist_ok=True)
+
+    cuda_config = out_dir / "grouped_config.txt"
+    with open(cuda_config, "w") as f:
         for m, n, k in zip(m_list, n_list, k_list):
             f.write(f"{m} {n} {k}\n")
 
     out_file = out_dir / "grouped_gemm.txt"
-    shapes_str = str(list(zip(m_list, n_list, k_list)))
     lines = [
         "=== CUDA Grouped GEMM Benchmark ===",
         f"Batch size: {len(m_list)}",
-        f"Shapes: {shapes_str}",
+        f"Shapes: {list(zip(m_list, n_list, k_list))}",
         "",
     ]
+    cfg_arg = str(cuda_config.resolve())
+    timeout = 600 if nsight else 120
 
-    for kernel_num in (0, 1, 2):
-        section = f"--- Kernel {kernel_num} ({KERNEL_NAMES[kernel_num]}) ---"
-        lines.append(section)
-        cmd = [str(exe), str(kernel_num), "p", str(cuda_config_file.resolve())]
-        result = subprocess.run(
-            cmd,
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        out = (result.stdout or "") + (result.stderr or "")
+    # Nsight: kernel 3 (TF32 all), kernel 2 (FP16 all)
+    if nsight:
+        for label, exe_path, kernel_arg in [
+            ("TF32", exe, "3"),
+            ("FP16", exe_half if exe_half.exists() else None, "2"),
+        ]:
+            if exe_path is None:
+                continue
+            rep_path = nsight_dir / f"grouped_gemm_{label.lower()}_all"
+            cmd = [str(exe_path), kernel_arg, "p", cfg_arg]
+            r = _wrap_ncu(cmd, rep_path, ncu_extra, timeout=600)
+            out = (r.stdout or "") + (r.stderr or "")
+            lines.append(f"--- Nsight (all {label}) ---")
+            lines.append(out.rstrip())
+            lines.append("")
+            print(f"[Nsight] {label} {'done' if r.returncode == 0 else f'FAILED ({r.returncode})'}", flush=True)
+
+    # TF32 kernels 0,1,2 (벤치마크)
+    for k in (0, 1, 2):
+        lines.append(f"--- Kernel {k} ({KERNEL_NAMES[k]}) ---")
+        out, ret = _run_cmd([str(exe), str(k), "p", cfg_arg], timeout=timeout)
         lines.append(out.rstrip())
-        if "Could not load config" in out or "using defaults (1024,4096,14336" in out:
-            print(f"[CUDA] WARNING: Config file open failed, binary used defaults (1024,4096,14336 x8)", flush=True)
-        if result.returncode != 0:
-            lines.append(f"[Kernel {kernel_num} failed with exit code {result.returncode}]")
-            print(f"[CUDA] Kernel {kernel_num} ({KERNEL_NAMES[kernel_num]}) FAILED (exit {result.returncode})", flush=True)
-        else:
-            print(f"[CUDA] Kernel {kernel_num} ({KERNEL_NAMES[kernel_num]}) done", flush=True)
+        _warn_if_config_fallback(out, "CUDA")
+        status = "FAILED" if ret != 0 else "done"
+        print(f"[CUDA] Kernel {k} ({KERNEL_NAMES[k]}) {status}", flush=True)
         lines.append("")
 
-    exe_half = REPO_ROOT / "bin" / "tmain_grouped_half"
+    # FP16
     if exe_half.exists():
         for k in (0, 1):
-            section = f"--- {FP16_KERNEL_NAMES[k]} ---"
-            lines.append(section)
-            cmd = [str(exe_half), str(k), "p", str(cuda_config_file.resolve())]
-            result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
-            out = (result.stdout or "") + (result.stderr or "")
+            lines.append(f"--- {FP16_KERNEL_NAMES[k]} ---")
+            out, ret = _run_cmd([str(exe_half), str(k), "p", cfg_arg], timeout=timeout)
             lines.append(out.rstrip())
-            if "Could not load config" in out or "using defaults (1024,4096,14336" in out:
-                print(f"[CUDA FP16] WARNING: Config file open failed, binary used defaults (1024,4096,14336 x8)", flush=True)
-            if result.returncode != 0:
-                lines.append(f"[{FP16_KERNEL_NAMES[k]} failed with exit code {result.returncode}]")
-                print(f"[CUDA FP16] {FP16_KERNEL_NAMES[k]} FAILED (exit {result.returncode})", flush=True)
-            else:
-                print(f"[CUDA FP16] {FP16_KERNEL_NAMES[k]} done", flush=True)
+            _warn_if_config_fallback(out, "CUDA FP16")
+            print(f"[CUDA FP16] {FP16_KERNEL_NAMES[k]} {'done' if ret == 0 else 'FAILED'}", flush=True)
             lines.append("")
 
     with open(out_file, "w") as f:
         f.write("\n".join(lines))
-
-    print(f"[CUDA] all done (TF32 + FP16), result saved to {out_file}", flush=True)
+    if nsight:
+        print(f"[CUDA] Nsight reports: {nsight_dir}/*.ncu-rep", flush=True)
     return out_file
 
 
-def run_triton_grouped(config_path=None):
-    """Triton grouped GEMM 벤치마크 (config와 동일 M,N,K)"""
+def run_triton_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
     script = REPO_ROOT / "implementations" / "triton" / "triton_grouped_gemm.py"
     if not script.exists():
-        print(f"Warning: {script} not found.")
+        print("Warning: triton_grouped_gemm.py not found.")
         return None
+
     out_dir = REPO_ROOT / "results" / "benchmark" / "triton"
+    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "grouped_gemm.txt"
-    config = config_path or (CONFIG_DIR / "config.yaml")
+    config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    cmd = [sys.executable, str(script), "--benchmark-only", "--config", str(config),
+           "--repeat", "1000", "--warmup", "50"]
+
     try:
-        cmd = [sys.executable, str(script), "--benchmark-only", "--config", str(config),
-               "--repeat", "1000", "--warmup", "50"]
-        with open(out_file, "w") as f:
-            subprocess.run(
-                cmd,
-                cwd=REPO_ROOT,
-                stdout=f,
-                stderr=subprocess.STDOUT,
-                timeout=300,
-            )
-        print(f"[Triton] done", flush=True)
-        return out_file
+        if nsight:
+            nsight_dir.mkdir(parents=True, exist_ok=True)
+            _run_backend_with_nsight(cmd, out_dir / "grouped_gemm.txt",
+                                     nsight_dir / "triton_grouped", "Triton", ncu_extra)
+        else:
+            with open(out_dir / "grouped_gemm.txt", "w") as f:
+                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
+            print("[Triton] done", flush=True)
+        return out_dir / "grouped_gemm.txt"
     except subprocess.TimeoutExpired:
-        print("Triton benchmark timed out.")
+        print("Triton timed out.")
         return None
     except Exception as e:
-        print(f"Triton benchmark failed: {e}")
+        print(f"Triton failed: {e}")
         return None
 
 
-def run_torch_grouped(config_path=None):
-    """PyTorch grouped GEMM 벤치마크 (config와 동일 M,N,K)"""
+def run_torch_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
     script = REPO_ROOT / "implementations" / "torch" / "torch_grouped_gemm.py"
     if not script.exists():
-        print(f"Warning: {script} not found.")
+        print("Warning: torch_grouped_gemm.py not found.")
         return None
+
     out_dir = REPO_ROOT / "results" / "benchmark" / "torch"
+    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / "grouped_gemm.txt"
-    config = config_path or (CONFIG_DIR / "config.yaml")
+    config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    cmd = [sys.executable, str(script), "--config", str(config), "--repeat", "1000", "--warmup", "50"]
+
     try:
-        cmd = [sys.executable, str(script), "--config", str(config),
-               "--repeat", "1000", "--warmup", "50"]
-        with open(out_file, "w") as f:
-            subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
-        print(f"[Torch] done", flush=True)
-        return out_file
+        if nsight:
+            nsight_dir.mkdir(parents=True, exist_ok=True)
+            _run_backend_with_nsight(cmd, out_dir / "grouped_gemm.txt",
+                                     nsight_dir / "torch_grouped", "Torch", ncu_extra)
+        else:
+            with open(out_dir / "grouped_gemm.txt", "w") as f:
+                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
+            print("[Torch] done", flush=True)
+        return out_dir / "grouped_gemm.txt"
     except Exception as e:
-        print(f"Torch benchmark failed: {e}")
+        print(f"Torch failed: {e}")
         return None
 
 
-def run_cutlass_grouped(config_path=None):
-    """Cutlass grouped GEMM (bin/tmain_cutlass_grouped). CUDA와 동일 config 사용."""
+def run_cutlass_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
     exe = REPO_ROOT / "bin" / "tmain_cutlass_grouped"
     if not exe.exists():
-        print("Warning: Cutlass binary not found. Run 'make cutlass_grouped' first (requires CUTLASS_ROOT).")
+        print("Warning: Cutlass binary not found. Run 'make cutlass_grouped' first.")
         return None
+
     m_list, n_list, k_list = load_unified_config(config_path)
     out_dir = REPO_ROOT / "results" / "benchmark" / "cutlass"
+    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
+
     config_file = out_dir / "grouped_config.txt"
     with open(config_file, "w") as f:
         for m, n, k in zip(m_list, n_list, k_list):
             f.write(f"{m} {n} {k}\n")
-    out_file = out_dir / "grouped_gemm.txt"
+
+    cmd = [str(exe), str(config_file.resolve()), "p"]
     try:
-        cmd = [str(exe), str(config_file.resolve()), "p"]
-        with open(out_file, "w") as f:
-            subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
-        print(f"[Cutlass] done", flush=True)
-        return out_file
+        if nsight:
+            nsight_dir.mkdir(parents=True, exist_ok=True)
+            _run_backend_with_nsight(cmd, out_dir / "grouped_gemm.txt",
+                                     nsight_dir / "cutlass_grouped", "Cutlass", ncu_extra)
+        else:
+            with open(out_dir / "grouped_gemm.txt", "w") as f:
+                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
+            print("[Cutlass] done", flush=True)
+        return out_dir / "grouped_gemm.txt"
     except Exception as e:
-        print(f"Cutlass benchmark failed: {e}")
+        print(f"Cutlass failed: {e}")
         return None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Grouped GEMM benchmarks for all backends")
-    parser.add_argument("--config", type=Path, default=None,
-                        help="Config YAML path (grouped.m, grouped.n, grouped.k)")
+    parser = argparse.ArgumentParser(description="Grouped GEMM benchmark (all backends)")
+    parser.add_argument("--config", type=Path, default=None, help="Config YAML path")
     parser.add_argument("--backend", choices=["cuda", "triton", "torch", "cutlass", "all"],
-                        default="all", help="Which backend to run")
-    parser.add_argument("--no-compare", action="store_true",
-                        help="Skip printing unified comparison at the end")
+                        default="all", help="Backend to run")
+    parser.add_argument("--no-compare", action="store_true", help="Skip unified report")
+    parser.add_argument("--nsight", action="store_true", help="Profile with Nsight Compute")
+    parser.add_argument("--nsight-out", type=Path, default=None, help="Dir for .ncu-rep files")
+    parser.add_argument("--ncu-extra", type=str, default=None, help="Extra ncu options")
     args = parser.parse_args()
 
-    config_path = args.config
-    if not config_path and (REPO_ROOT / "experiments" / "compare_grouped" / "config.yaml").exists():
-        config_path = REPO_ROOT / "experiments" / "compare_grouped" / "config.yaml"
+    config_path = args.config or (CONFIG_DIR / "config.yaml" if (CONFIG_DIR / "config.yaml").exists() else None)
+    nsight_opts = dict(nsight=args.nsight, nsight_out=args.nsight_out, ncu_extra=args.ncu_extra)
 
     results = []
-
     if args.backend in ("cuda", "all"):
-        results.append(("cuda", run_cuda_grouped(config_path)))
+        results.append(("cuda", run_cuda_grouped(config_path, **nsight_opts)))
     if args.backend in ("triton", "all"):
-        results.append(("triton", run_triton_grouped(config_path)))
+        results.append(("triton", run_triton_grouped(config_path, **nsight_opts)))
     if args.backend in ("torch", "all"):
-        results.append(("torch", run_torch_grouped(config_path)))
+        results.append(("torch", run_torch_grouped(config_path, **nsight_opts)))
     if args.backend in ("cutlass", "all"):
-        results.append(("cutlass", run_cutlass_grouped(config_path)))
+        results.append(("cutlass", run_cutlass_grouped(config_path, **nsight_opts)))
 
     success = sum(1 for _, r in results if r is not None)
     print(f"\nCompleted: {success}/{len(results)} backends")

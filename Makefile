@@ -28,7 +28,7 @@ TARGET_GEMM_GROUPED = $(BIN_DIR)/tmain_grouped
 TARGET_GEMM_GROUPED_HALF = $(BIN_DIR)/tmain_grouped_half
 TARGET_CUTLASS_GROUPED = $(BIN_DIR)/tmain_cutlass_grouped
 
-COMMON_DEPS = $(INCLUDE_DIR)/helpers.h $(INCLUDE_DIR)/cuda_kernels.cuh $(INCLUDE_DIR)/tensor_kernels.cuh $(INCLUDE_DIR)/runner.cuh
+COMMON_DEPS = $(INCLUDE_DIR)/helpers.h $(INCLUDE_DIR)/config_io.h $(INCLUDE_DIR)/cuda_kernels.cuh $(INCLUDE_DIR)/tensor_kernels.cuh $(INCLUDE_DIR)/runner.cuh
 
 .PHONY: all clean grouped fp32 cutlass_grouped
 

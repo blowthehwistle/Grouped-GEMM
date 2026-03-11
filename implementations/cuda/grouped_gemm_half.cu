@@ -1,37 +1,7 @@
-#include <fstream>
-#include <sstream>
-#include <vector>
-
+#include "config_io.h"
 #include "helpers.h"
 #include "runner.cuh"
 #include "nvtx3/nvToolsExt.h"
-
-int load_mnk_from_file(const char *path, int **m_list, int **n_list, int **k_list) {
-  std::ifstream f(path);
-  if (!f) return -1;
-  std::vector<int> m_vec, n_vec, k_vec;
-  std::string line;
-  while (std::getline(f, line)) {
-    std::istringstream ss(line);
-    int a, b, c;
-    if (ss >> a >> b >> c) {
-      m_vec.push_back(a);
-      n_vec.push_back(b);
-      k_vec.push_back(c);
-    }
-  }
-  if (m_vec.empty()) return -1;
-  int batch_size = static_cast<int>(m_vec.size());
-  *m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  *n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  *k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  for (int i = 0; i < batch_size; i++) {
-    (*m_list)[i] = m_vec[i];
-    (*n_list)[i] = n_vec[i];
-    (*k_list)[i] = k_vec[i];
-  }
-  return batch_size;
-}
 
 void randomize_matrix_half(int N, __half *M) {
   struct timeval time{};
@@ -47,14 +17,14 @@ void randomize_matrix_half(int N, __half *M) {
 int main(int argc, char **argv) {
   if (argc < 3) {
     std::cerr << "Usage: " << argv[0] << " <kernel_number> <result_mode> [config_file | batch_size m n k]\n"
-              << "  kernel_number: 0=cuBLAS Loop (FP16), 1=cuBLAS Grouped (FP16)\n"
+              << "  kernel_number: 0=cuBLAS Loop, 1=cuBLAS Grouped, 2=all (for Nsight profiling)\n"
               << "  result_mode: p=compact\n"
               << "  config_file: 한 줄당 'M N K'\n";
     return EXIT_FAILURE;
   }
   int kernel_number = std::atoi(argv[1]);
-  if (kernel_number > 1) {
-    std::cerr << "Kernel 0 or 1 only." << std::endl;
+  if (kernel_number > 2) {
+    std::cerr << "Kernel 0, 1, or 2 only." << std::endl;
     return EXIT_FAILURE;
   }
 
@@ -165,17 +135,42 @@ int main(int argc, char **argv) {
   CHECK_CUDA(cudaMemcpy(d_C_offset, C_offset, (batch_size + 1) * sizeof(int), cudaMemcpyHostToDevice));
 
   float elapsed_time1, elapsed_time2;
+  bool ok = false;
   cudaEvent_t start, stop;
   CHECK_CUDA(cudaEventCreate(&start));
   CHECK_CUDA(cudaEventCreate(&stop));
 
-  for (int i = 0; i < 50; i++)
+  const int warmup = (kernel_number == 2) ? 2 : 50;
+  for (int i = 0; i < warmup; i++)
     runCublasGroupedTF16_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list, batch_size,
                                  A_offset, B_offset, C_offset, alpha, beta);
   cudaDeviceSynchronize();
   CHECK_CUDA(cudaMemset(d_C_ref, 0, size_C * sizeof(__half)));
 
-  int repeat = 1000;
+  int repeat = (kernel_number == 2) ? 5 : 1000;
+  bool k_uniform = true;
+  for (int i = 1; i < batch_size && k_uniform; i++)
+    if (k_list[i] != k_list[0]) k_uniform = false;
+
+  if (kernel_number == 2) {
+    for (int k = 0; k <= 1; k++) {
+      int eff = (k == 0 && !k_uniform) ? 1 : k;
+      nvtxRangePushA((eff == 0) ? "FP16_Loop" : "FP16_Grouped");
+      for (int i = 0; i < repeat; i++) {
+        if (eff == 0)
+          runCublasTF16_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list[0], batch_size,
+                                A_offset, B_offset, C_offset, alpha, beta);
+        else
+          runCublasGroupedTF16_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
+                                       A_offset, B_offset, C_offset, alpha, beta);
+      }
+      nvtxRangePop();
+      CHECK_CUDA(cudaDeviceSynchronize());
+    }
+    std::cout << "All FP16 kernels (0,1) run for profiling.\n";
+    ok = true;
+    goto cleanup;
+  }
 
   nvtxRangePushA("cuBLAS");
   CHECK_CUDA(cudaEventRecord(start));
@@ -189,9 +184,6 @@ int main(int argc, char **argv) {
 
   CHECK_CUDA(cudaMemcpy(C_ref, d_C_ref, size_C * sizeof(__half), cudaMemcpyDeviceToHost));
 
-  bool k_uniform = true;
-  for (int i = 1; i < batch_size && k_uniform; i++)
-    if (k_list[i] != k_list[0]) k_uniform = false;
   int eff = (kernel_number == 0 && !k_uniform) ? 1 : kernel_number;
   if (kernel_number == 0 && !k_uniform)
     std::cerr << "Note: Kernel 0 requires uniform K; using Kernel 1 (Grouped) instead.\n";
@@ -214,6 +206,7 @@ int main(int argc, char **argv) {
 
   CHECK_CUDA(cudaMemcpy(C, d_C, size_C * sizeof(__half), cudaMemcpyDeviceToHost));
 
+  ok = verify_matrix(C_ref, C, m_list, n_list, batch_size);
   elapsed_time1 /= 1000.f;
   elapsed_time2 /= 1000.f;
   long flops = 0;
@@ -222,7 +215,6 @@ int main(int argc, char **argv) {
   float gflops_ref = (repeat * flops * 1e-9f) / elapsed_time1;
   float gflops_ker = (repeat * flops * 1e-9f) / elapsed_time2;
 
-  bool ok = verify_matrix(C_ref, C, m_list, n_list, batch_size);
   std::cout << (ok ? "Result is correct\n" : "Result is different\n");
 
   if (strcmp(argv[2], "p") == 0) {
@@ -234,6 +226,7 @@ int main(int argc, char **argv) {
     std::cout << "  [raw] " << t_ref << "," << t_ker << "," << gflops_ref << "," << gflops_ker << "\n";
   }
 
+cleanup:
   free(A);
   free(B);
   free(C);

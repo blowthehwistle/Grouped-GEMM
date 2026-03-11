@@ -1,9 +1,6 @@
 """
-PyTorch Grouped GEMM - Triton 스타일 API
-
-torch._grouped_mm을 사용하여 Triton grouped_gemm과 동일한 인터페이스 제공.
-- group_gemm_fn(group_A, group_B): 리스트 형태 입력 → 리스트 형태 출력
-- M, N, K는 config/CLI로 주입 가능 (run_all, 통합 실험용)
+PyTorch Grouped GEMM. torch.grouped_mm 또는 matmul loop.
+config/CLI로 M,N,K 주입 (run_all 통합 실험용).
 """
 
 import argparse
@@ -15,17 +12,17 @@ from torch import Tensor
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# grouped_config import
-_config_module = Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped" / "grouped_config.py"
-if _config_module.exists():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("grouped_config", _config_module)
-    _gc = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(_gc)
-    load_grouped_sizes = _gc.load_grouped_sizes
-    add_grouped_args = _gc.add_grouped_args
-else:
+# grouped_config (implementations/에서 실행 시)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped"))
+try:
+    from script_utils import load_grouped_config_module, DEFAULT_CONFIG
+    _load, _add_args = load_grouped_config_module()
+    load_grouped_sizes = _load
+    add_grouped_args = _add_args
+except ImportError:
     load_grouped_sizes = add_grouped_args = None
+    DEFAULT_CONFIG = None
 
 
 def _supports_grouped_mm() -> bool:
@@ -139,26 +136,22 @@ def run_benchmark(
 
 
 if __name__ == "__main__":
-    # 기본값: CUDA config와 동일 (batch_size=8, M=1024, N=4096, K=14336)
     m_list, n_list, k_list = [1024] * 8, [4096] * 8, [14336] * 8
     warmup, repeat = 50, 100
 
-    if load_grouped_sizes and add_grouped_args:
+    if load_grouped_sizes and add_grouped_args and DEFAULT_CONFIG:
         parser = argparse.ArgumentParser()
         add_grouped_args(parser)
         parser.add_argument("--warmup", type=int, default=50)
         parser.add_argument("--repeat", type=int, default=100)
-        parser.add_argument("--no-config", action="store_true", help="config 로드 안 함")
+        parser.add_argument("--no-config", action="store_true")
         args = parser.parse_args()
         warmup, repeat = args.warmup, args.repeat
-        if not args.no_config or args.config or args.m or args.n or args.k:
-            default_cfg = Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped" / "config.yaml"
+        if args.config or args.m or args.n or args.k or not args.no_config:
             m_list, n_list, k_list = load_grouped_sizes(
-                config_path=None if args.no_config else (args.config or default_cfg),
-                m=args.m,
-                n=args.n,
-                k=args.k,
-                default_config=default_cfg,
+                config_path=None if args.no_config else (args.config or DEFAULT_CONFIG),
+                m=args.m, n=args.n, k=args.k,
+                default_config=DEFAULT_CONFIG,
             )
 
     # Validation

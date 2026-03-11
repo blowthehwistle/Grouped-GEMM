@@ -1,0 +1,2 @@
+# run_all.py, grouped_config.py, compare.py 등에서 사용
+pyyaml>=5.1

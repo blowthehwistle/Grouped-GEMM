@@ -10,7 +10,7 @@ Grouped GEMM 단일-커널 백엔드만 비교 (공정한 비교용).
   - Torch: grouped_mm (1 kernel) — 조건: BF16, 동일 K·N일 때만. 아니면 loop fallback
 
 run_all.py와 동일 config 사용. 결과는 results/benchmark/single_kernel/ 에 저장.
-기본적으로 .ncu-rep 생성. --no-nsight 시 비활성화.
+--nsight 시 .ncu-rep 생성.
 
 공정성: 커널 런치 오버헤드를 제거해, 순수 계산 성능만 비교 가능.
 """
@@ -48,11 +48,17 @@ def _run_cmd(cmd, capture=True, timeout=120):
 
 
 def _wrap_ncu(cmd, rep_path, ncu_extra=None, timeout=600):
-    """cmd를 ncu로 감싸 실행."""
-    ncu_cmd = ["ncu", "-o", str(rep_path), "-c", "50"]
+    """
+    -o는 모호하므로 --export를 사용합니다. 
+    이미 파일이 있을 경우 덮어쓰려면 --force-overwrite(-f)를 추가하는 것이 안전합니다.
+    """
+    # -o 대신 --export 사용 (또는 --output-file)
+    ncu_cmd = ["ncu", "--export", str(rep_path), "--force-overwrite", "--launch-count", "5"]
+    
     if ncu_extra:
         ncu_cmd.extend(ncu_extra.split())
     ncu_cmd.extend(["--"] + cmd)
+    
     return subprocess.run(ncu_cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
 
 
@@ -65,7 +71,19 @@ def _run_backend_with_nsight(cmd, out_file, rep_path, label, ncu_extra=None):
     with open(out_file, "w") as f:
         f.write(out)
     ok = r.returncode == 0
-    print(f"[Nsight] {label} {'done' if ok else f'FAILED (exit {r.returncode})'}", flush=True)
+    if ok:
+        print(f"[Nsight] {label} done", flush=True)
+    else:
+        print(f"[Nsight] {label} FAILED (exit {r.returncode})", flush=True)
+        # 에러 원인: ncu는 stdout/stderr 모두에 출력할 수 있음
+        combined = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        lines = [x for x in combined.split("\n") if x.strip()]
+        if lines:
+            tail = lines[-25:] if len(lines) > 25 else lines
+            for line in tail:
+                print(f"  | {line}", flush=True)
+        else:
+            print(f"  | (no output, see {out_file} for full capture)", flush=True)
     return ok
 
 
@@ -340,14 +358,14 @@ def main():
     parser.add_argument("--backend", choices=["cuda", "triton", "torch", "cutlass", "all"],
                         default="all", help="Backend to run")
     parser.add_argument("--no-compare", action="store_true", help="Skip unified report")
-    parser.add_argument("--no-nsight", action="store_true",
-                        help="Disable Nsight profiling (default: generate .ncu-rep)")
+    parser.add_argument("--nsight", action="store_true",
+                        help="Profile with Nsight Compute (.ncu-rep)")
     parser.add_argument("--nsight-out", type=Path, default=None, help="Dir for .ncu-rep files")
     parser.add_argument("--ncu-extra", type=str, default=None, help="Extra ncu options")
     args = parser.parse_args()
 
     config_path = args.config or (CONFIG_DIR / "config.yaml" if (CONFIG_DIR / "config.yaml").exists() else None)
-    nsight_opts = dict(nsight=not args.no_nsight, nsight_out=args.nsight_out, ncu_extra=args.ncu_extra)
+    nsight_opts = dict(nsight=args.nsight, nsight_out=args.nsight_out, ncu_extra=args.ncu_extra)
 
     print("=== Single-Kernel Grouped GEMM Benchmark ===\n", flush=True)
 

@@ -34,11 +34,17 @@ def load_unified_config(config_path):
 
 
 def _wrap_ncu(cmd, rep_path, ncu_extra=None, timeout=600):
-    """cmd를 ncu로 감싸 실행."""
-    ncu_cmd = ["ncu", "-o", str(rep_path), "-c", "50"]
+    """
+    -o는 모호하므로 --export를 사용합니다. 
+    이미 파일이 있을 경우 덮어쓰려면 --force-overwrite(-f)를 추가하는 것이 안전합니다.
+    """
+    # -o 대신 --export 사용 (또는 --output-file)
+    ncu_cmd = ["ncu", "--export", str(rep_path), "--force-overwrite", "--launch-count", "5"]
+    
     if ncu_extra:
         ncu_cmd.extend(ncu_extra.split())
     ncu_cmd.extend(["--"] + cmd)
+    
     return subprocess.run(ncu_cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
 
 
@@ -61,7 +67,17 @@ def _run_backend_with_nsight(cmd, out_file, rep_path, label, ncu_extra=None):
     with open(out_file, "w") as f:
         f.write(out)
     ok = r.returncode == 0
-    print(f"[Nsight] {label} {'done' if ok else f'FAILED (exit {r.returncode})'}", flush=True)
+    if ok:
+        print(f"[Nsight] {label} done", flush=True)
+    else:
+        print(f"[Nsight] {label} FAILED (exit {r.returncode})", flush=True)
+        combined = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        lines = [x for x in combined.split("\n") if x.strip()]
+        if lines:
+            for line in (lines[-25:] if len(lines) > 25 else lines):
+                print(f"  | {line}", flush=True)
+        else:
+            print(f"  | (see {out_file} for full output)", flush=True)
     return ok
 
 

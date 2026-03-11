@@ -184,12 +184,11 @@ int main(int argc, char **argv) {
   // Print config (CUDA와 동일 형식)
   std::cout << "=== Cutlass Grouped GEMM Benchmark ===\n";
   std::cout << "Batch size: " << batch_size << "\n";
-  std::cout << "Shapes: M=[";
-  for (int i = 0; i < batch_size; i++) std::cout << (i ? "," : "") << m_vec[i];
-  std::cout << "], N=[";
-  for (int i = 0; i < batch_size; i++) std::cout << (i ? "," : "") << n_vec[i];
-  std::cout << "], K=[";
-  for (int i = 0; i < batch_size; i++) std::cout << (i ? "," : "") << k_vec[i];
+  std::cout << "Shapes: [";
+  for (int i = 0; i < batch_size; i++) {
+    if (i) std::cout << ", ";
+    std::cout << "(" << m_vec[i] << "," << n_vec[i] << "," << k_vec[i] << ")";
+  }
   std::cout << "]\n\n";
   std::cout << "      B          M     N     K\n";
   int check_point = 0;

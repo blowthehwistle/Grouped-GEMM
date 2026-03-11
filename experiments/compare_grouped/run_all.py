@@ -53,10 +53,11 @@ def run_cuda_grouped(config_path=None):
             f.write(f"{m} {n} {k}\n")
 
     out_file = out_dir / "grouped_gemm.txt"
+    shapes_str = str(list(zip(m_list, n_list, k_list)))
     lines = [
         "=== CUDA Grouped GEMM Benchmark ===",
         f"Batch size: {len(m_list)}",
-        f"Shapes: M={list(m_list)}, N={list(n_list)}, K={list(k_list)}",
+        f"Shapes: {shapes_str}",
         "",
     ]
 
@@ -75,12 +76,15 @@ def run_cuda_grouped(config_path=None):
         lines.append(out.rstrip())
         if result.returncode != 0:
             lines.append(f"[Kernel {kernel_num} failed with exit code {result.returncode}]")
+            print(f"[CUDA] Kernel {kernel_num} ({KERNEL_NAMES[kernel_num]}) FAILED (exit {result.returncode})", flush=True)
+        else:
+            print(f"[CUDA] Kernel {kernel_num} ({KERNEL_NAMES[kernel_num]}) done", flush=True)
         lines.append("")
 
     with open(out_file, "w") as f:
         f.write("\n".join(lines))
 
-    print(f"CUDA result saved to {out_file} (kernels 0, 1, 2)")
+    print(f"[CUDA] all done, result saved to {out_file}", flush=True)
     return out_file
 
 
@@ -105,7 +109,7 @@ def run_triton_grouped(config_path=None):
                 stderr=subprocess.STDOUT,
                 timeout=300,
             )
-        print(f"Triton result saved to {out_file}")
+        print(f"[Triton] done", flush=True)
         return out_file
     except subprocess.TimeoutExpired:
         print("Triton benchmark timed out.")
@@ -130,7 +134,7 @@ def run_torch_grouped(config_path=None):
                "--repeat", "1000", "--warmup", "50"]
         with open(out_file, "w") as f:
             subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
-        print(f"Torch result saved to {out_file}")
+        print(f"[Torch] done", flush=True)
         return out_file
     except Exception as e:
         print(f"Torch benchmark failed: {e}")
@@ -155,7 +159,7 @@ def run_cutlass_grouped(config_path=None):
         cmd = [str(exe), str(config_file.resolve()), "p"]
         with open(out_file, "w") as f:
             subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
-        print(f"Cutlass result saved to {out_file}")
+        print(f"[Cutlass] done", flush=True)
         return out_file
     except Exception as e:
         print(f"Cutlass benchmark failed: {e}")

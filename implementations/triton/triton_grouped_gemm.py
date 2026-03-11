@@ -19,6 +19,7 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+import argparse
 from pathlib import Path
 from typing import List, Optional
 
@@ -27,11 +28,11 @@ import torch
 import triton
 import triton.language as tl
 
-DEVICE = triton.runtime.driver.active.get_active_torch_device()
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def is_cuda():
-    return triton.runtime.driver.active.get_current_target().backend == "cuda"
+    return torch.cuda.is_available()
 
 
 def supports_tma():
@@ -238,7 +239,7 @@ tma_configs = [
 
 @triton.autotune(
     tma_configs,
-    key=['group_a_ptrs', 'group_b_ptrs', 'gropup_c_ptrs', 'group_size'],
+    key=['group_a_ptrs', 'group_b_ptrs', 'group_c_ptrs', 'group_size'],
 )
 @triton.jit
 def grouped_matmul_tma_kernel(
@@ -382,35 +383,25 @@ def group_gemm_tma_fn(group_A, group_B):
     return group_C
 
 
-# 기본 M, N, K (config/CLI로 override 가능)
 _DEFAULT_M = [1024, 512, 256, 128]
 _DEFAULT_N = [1024, 512, 256, 128]
 _DEFAULT_K = [1024, 512, 256, 128]
 
-group_m = _DEFAULT_M
-group_n = _DEFAULT_N
-group_k = _DEFAULT_K
-group_A, group_B, group_B_T = [], [], []
-assert len(group_m) == len(group_n)
-assert len(group_n) == len(group_k)
-group_size = len(group_m)
-for i in range(group_size):
-    M, N, K = group_m[i], group_n[i], group_k[i]
-    A = torch.rand((M, K), device=DEVICE, dtype=torch.float16)
-    B = torch.rand((K, N), device=DEVICE, dtype=torch.float16)
-    group_A.append(A)
-    group_B.append(B)
-    group_B_T.append(B.T.contiguous())
 
-tri_out = group_gemm_fn(group_A, group_B)
-ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
-for i in range(group_size):
-    assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=1e-2)
-
-if supports_tma():
-    tri_tma_out = group_gemm_tma_fn(group_A, group_B_T)
-    for i in range(group_size):
-        assert torch.allclose(ref_out[i], tri_tma_out[i], atol=1e-2, rtol=1e-2)
+def _validate_default_shapes():
+    """기본 shape으로 Triton vs reference 검증."""
+    m, n, k = _DEFAULT_M, _DEFAULT_N, _DEFAULT_K
+    group_A = [torch.rand((M, K), device=DEVICE, dtype=torch.float16) for M, K in zip(m, k)]
+    group_B = [torch.rand((K, N), device=DEVICE, dtype=torch.float16) for K, N in zip(k, n)]
+    tri_out = group_gemm_fn(group_A, group_B)
+    ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
+    for i in range(len(m)):
+        assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=1e-2)
+    if supports_tma():
+        group_B_T = [b.T.contiguous() for b in group_B]
+        tri_tma = group_gemm_tma_fn(group_A, group_B_T)
+        for i in range(len(m)):
+            assert torch.allclose(ref_out[i], tri_tma[i], atol=1e-2, rtol=1e-2)
 
 
 # only launch the kernel, no tensor preparation here to remove all overhead
@@ -579,7 +570,7 @@ def run_benchmark(
     n_list: List[int],
     k_list: List[int],
     warmup: int = 50,
-    repeat: int = 100,
+    repeat: int = 1000,
 ) -> tuple:
     """config/CLI로 받은 M,N,K로 벤치마크. (elapsed_ms, gflops) 반환."""
     group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
@@ -605,50 +596,76 @@ def run_benchmark(
         triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list))
     torch.cuda.synchronize()
 
-    import time
-    start = time.perf_counter()
+    start_ev = torch.cuda.Event(enable_timing=True)
+    end_ev = torch.cuda.Event(enable_timing=True)
+    start_ev.record()
     for _ in range(repeat):
         triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list))
+    end_ev.record()
     torch.cuda.synchronize()
-    elapsed_ms = (time.perf_counter() - start) / repeat * 1000
+    elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
     flops = sum(2 * m * n * k for m, n, k in zip(m_list, n_list, k_list))
     gflops = flops * 1e-9 / (elapsed_ms / 1000)
     return elapsed_ms, gflops
 
 
 if __name__ == "__main__":
-    import argparse
-    _config_module = Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped" / "grouped_config.py"
-    if _config_module.exists():
-        import importlib.util
-        _spec = importlib.util.spec_from_file_location("grouped_config", _config_module)
-        _gc = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_gc)
-        _load = _gc.load_grouped_sizes
-        _add_args = _gc.add_grouped_args
-    else:
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped"))
+    try:
+        from script_utils import load_grouped_config_module, DEFAULT_CONFIG
+        _load, _add_args = load_grouped_config_module()
+    except ImportError:
         _load = _add_args = None
+        DEFAULT_CONFIG = None
 
     parser = argparse.ArgumentParser()
     if _add_args:
         _add_args(parser)
     parser.add_argument("--warmup", type=int, default=50)
-    parser.add_argument("--repeat", type=int, default=100)
+    parser.add_argument("--repeat", type=int, default=1000)
     parser.add_argument("--no-config", action="store_true")
     parser.add_argument("--benchmark-only", action="store_true", help="config 모드로만 실행, perf_report 스킵")
     args = parser.parse_args()
 
     use_config = args.benchmark_only or args.config or args.m or args.n or args.k
-    if use_config and _load:
-        default_cfg = Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped" / "config.yaml"
+    if use_config and _load and DEFAULT_CONFIG:
         m_list, n_list, k_list = _load(
-            config_path=None if args.no_config else args.config,
+            config_path=None if args.no_config else (args.config or DEFAULT_CONFIG),
             m=args.m, n=args.n, k=args.k,
-            default_config=default_cfg,
+            default_config=DEFAULT_CONFIG,
         )
+        # Validation: Triton output vs torch.matmul reference
+        group_A, group_B = make_grouped_matrices(m_list, n_list, k_list, dtype=torch.float16)
+        group_C = [torch.empty((m, n), device=DEVICE, dtype=torch.float16)
+                   for m, n, _ in zip(m_list, n_list, k_list)]
+        A_addrs = [a.data_ptr() for a in group_A]
+        B_addrs = [b.data_ptr() for b in group_B]
+        C_addrs = [c.data_ptr() for c in group_C]
+        g_sizes = []
+        g_lds = []
+        for M, N, K in zip(m_list, n_list, k_list):
+            g_sizes += [M, N, K]
+            g_lds += [K, N, N]
+        d_a_ptrs = torch.tensor(A_addrs, device=DEVICE)
+        d_b_ptrs = torch.tensor(B_addrs, device=DEVICE)
+        d_c_ptrs = torch.tensor(C_addrs, device=DEVICE)
+        d_g_sizes = torch.tensor(g_sizes, dtype=torch.int32, device=DEVICE)
+        d_g_lds = torch.tensor(g_lds, dtype=torch.int32, device=DEVICE)
+        triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list))
+        torch.cuda.synchronize()
+        ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
+        for i in range(len(m_list)):
+            assert torch.allclose(
+                group_C[i].float(), ref_out[i].float(),
+                atol=1e-1, rtol=1e-1,
+            ), f"Triton validation failed at batch {i}"
+        print("Triton grouped GEMM validation passed.")
+
         elapsed_ms, gflops = run_benchmark(m_list, n_list, k_list, args.warmup, args.repeat)
         print(f"M,N,K: {m_list}, {n_list}, {k_list}")
         print(f"Triton grouped GEMM: {elapsed_ms:.3f} ms, {gflops:.1f} GFLOPS")
     else:
+        _validate_default_shapes()
         benchmark_square_matrices.run(show_plots=True, print_data=True)
         benchmark_batches.run(show_plots=True, print_data=True)

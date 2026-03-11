@@ -265,6 +265,29 @@ bool verify_matrix(void *matRef, void *matOut, int m, int n, int batch_size) {
   return true;
 }
 
+inline bool verify_matrix(__half *matRef, __half *matOut, int *m_list, int *n_list, int batch_size) {
+  int offset = 0;
+  for (int batch = 0; batch < batch_size; batch++) {
+    int m = m_list[batch], n = n_list[batch];
+    for (int i = 0; i < m * n; i++) {
+      float ref_val = __half2float(matRef[offset + i]);
+      float out_val = __half2float(matOut[offset + i]);
+      if (std::isnan(ref_val) || std::isnan(out_val)) {
+        printf("NAN Detected\n");
+        return false;
+      }
+      double diff = std::fabs(ref_val - out_val) / (std::fabs(ref_val) + 1e-6f);
+      if (diff > 0.01) {  // FP16: relaxed tolerance
+        printf("Divergence! Should %.6f, Is %.6f (Relative Diff %.6f) at %d\n",
+               ref_val, out_val, diff, offset + i);
+        return false;
+      }
+    }
+    offset += m * n;
+  }
+  return true;
+}
+
 bool verify_matrix(void *matRef, void *matOut, int *m_list, int *n_list, int batch_size) {
   double diff = 0.0;
   int i, m, n;
@@ -273,13 +296,14 @@ bool verify_matrix(void *matRef, void *matOut, int *m_list, int *n_list, int bat
     m = m_list[batch];
     n = n_list[batch];
     for (i = 0; i < m * n; i++) {
-      float ref_val = ((float *)matRef)[i];
-      float out_val = ((float *)matOut)[i];
+      float ref_val = ((float *)matRef)[offset + i];
+      float out_val = ((float *)matOut)[offset + i];
       if (std::isnan(ref_val) || std::isnan(out_val)) {
         printf("NAN Detected\n");
         return false;
       }
       diff = std::fabs(ref_val - out_val) / (std::fabs(ref_val) + 1e-6);  // Avoid division by zero
+      // TF32: loop vs grouped API can differ slightly (~0.01%) due to reduction order
       if (diff > 0.0001) {
         printf("Divergence! Should %.6f, Is %.6f (Relative Diff %.6f) at %d, (%d, %d, %d)\n",
                ref_val, out_val, diff, offset + i, batch, i / n, i % n);
@@ -290,6 +314,7 @@ bool verify_matrix(void *matRef, void *matOut, int *m_list, int *n_list, int bat
       //           ref_val, out_val, diff, i, i / n);
       // }
     }
+    offset += m * n;
   }
   return true;
 }

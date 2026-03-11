@@ -1,31 +1,28 @@
 """
-PyTorch Grouped GEMM - Triton 스타일 API
-
-torch._grouped_mm을 사용하여 Triton grouped_gemm과 동일한 인터페이스 제공.
-- group_gemm_fn(group_A, group_B): 리스트 형태 입력 → 리스트 형태 출력
-- M, N, K는 config/CLI로 주입 가능 (run_all, 통합 실험용)
+PyTorch Grouped GEMM. torch.grouped_mm 또는 matmul loop.
+config/CLI로 M,N,K 주입 (run_all 통합 실험용).
 """
 
 import argparse
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 from torch import Tensor
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# grouped_config import
-_config_module = Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped" / "grouped_config.py"
-if _config_module.exists():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("grouped_config", _config_module)
-    _gc = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(_gc)
-    load_grouped_sizes = _gc.load_grouped_sizes
-    add_grouped_args = _gc.add_grouped_args
-else:
+# grouped_config (implementations/에서 실행 시)
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped"))
+try:
+    from script_utils import load_grouped_config_module, DEFAULT_CONFIG
+    _load, _add_args = load_grouped_config_module()
+    load_grouped_sizes = _load
+    add_grouped_args = _add_args
+except ImportError:
     load_grouped_sizes = add_grouped_args = None
+    DEFAULT_CONFIG = None
 
 
 def _supports_grouped_mm() -> bool:
@@ -114,9 +111,9 @@ def run_benchmark(
     n_list: List[int],
     k_list: List[int],
     warmup: int = 50,
-    repeat: int = 100,
-) -> tuple[float, float]:
-    """벤치마크 실행. (elapsed_ms, gflops) 반환."""
+    repeat: int = 1000,
+) -> Tuple[float, float]:
+    """벤치마크 실행. (elapsed_ms, gflops) 반환. CUDA Event 기반 측정 (cuBLAS와 동일)."""
     group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
 
     for _ in range(warmup):
@@ -124,13 +121,14 @@ def run_benchmark(
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
-    import time
-    start = time.perf_counter()
+    start_ev = torch.cuda.Event(enable_timing=True)
+    end_ev = torch.cuda.Event(enable_timing=True)
+    start_ev.record()
     for _ in range(repeat):
         torch_perf_fn(group_A, group_B)
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    elapsed_ms = (time.perf_counter() - start) / repeat * 1000
+    end_ev.record()
+    torch.cuda.synchronize()
+    elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
 
     flops = sum(2 * m * n * k for m, n, k in zip(m_list, n_list, k_list))
     gflops = flops * 1e-9 / (elapsed_ms / 1000)
@@ -138,27 +136,22 @@ def run_benchmark(
 
 
 if __name__ == "__main__":
-    m_list = [1024, 512, 256, 128]
-    n_list = [1024, 512, 256, 128]
-    k_list = [1024, 512, 256, 128]
-    warmup, repeat = 50, 100
+    m_list, n_list, k_list = [1024] * 8, [4096] * 8, [14336] * 8
+    warmup, repeat = 50, 1000
 
-    if load_grouped_sizes and add_grouped_args:
+    if load_grouped_sizes and add_grouped_args and DEFAULT_CONFIG:
         parser = argparse.ArgumentParser()
         add_grouped_args(parser)
         parser.add_argument("--warmup", type=int, default=50)
-        parser.add_argument("--repeat", type=int, default=100)
-        parser.add_argument("--no-config", action="store_true", help="config 로드 안 함")
+        parser.add_argument("--repeat", type=int, default=1000)
+        parser.add_argument("--no-config", action="store_true")
         args = parser.parse_args()
         warmup, repeat = args.warmup, args.repeat
-        if not args.no_config or args.config or args.m or args.n or args.k:
-            default_cfg = Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped" / "config.yaml"
+        if args.config or args.m or args.n or args.k or not args.no_config:
             m_list, n_list, k_list = load_grouped_sizes(
-                config_path=args.config if not args.no_config else None,
-                m=args.m,
-                n=args.n,
-                k=args.k,
-                default_config=default_cfg,
+                config_path=None if args.no_config else (args.config or DEFAULT_CONFIG),
+                m=args.m, n=args.n, k=args.k,
+                default_config=DEFAULT_CONFIG,
             )
 
     # Validation

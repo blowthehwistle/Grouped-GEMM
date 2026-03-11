@@ -1,3 +1,4 @@
+#include "config_io.h"
 #include "helpers.h"
 #include "runner.cuh"
 #include "nvtx3/nvToolsExt.h"
@@ -36,14 +37,15 @@ void set_mnk(int *M, int *N, int *K, const int batch_size, const int *m_value,
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    std::cerr << "Usage: " << argv[0] << " <kernel_number>" << " <<result display option>>"
-              << std::endl;
+  if (argc < 3) {
+    std::cerr << "Usage: " << argv[0] << " <kernel_number> <result_mode> [config_file | batch_size m n k]\n"
+              << "  kernel_number: 0=cuBLAS, 1=GroupedTF32, 2=custom, 3=all (for Nsight profiling)\n"
+              << "  result_mode: p=compact, else=verbose\n"
+              << "  config_file: 한 줄당 'M N K' (배치별 상이한 M,N,K)\n"
+              << "  또는 batch_size m n k (uniform, 모든 배치 동일)\n";
     return EXIT_FAILURE;
   }
   int kernel_number = std::atoi(argv[1]);
-
-  // CudaDeviceInfo();
 
   // create cuBLAS handle
   cublasHandle_t handle;
@@ -55,40 +57,57 @@ int main(int argc, char **argv) {
   // set constants for GEMM
   float alpha = 1.0, beta = 0.0;
 
-  // set the size of matrices
-  long batch_size = 100;
+  long batch_size;
+  int *m_list = nullptr;
+  int *n_list = nullptr;
+  int *k_list = nullptr;
+
+  // Config: config 파일 또는 argv (uniform) 또는 기본값
+  if (argc >= 4) {
+    int loaded = load_mnk_from_file(argv[3], &m_list, &n_list, &k_list);
+    if (loaded > 0) {
+      batch_size = loaded;
+    } else if (argc >= 7) {
+      batch_size = std::atol(argv[3]);
+      int cfg_m = std::atoi(argv[4]);
+      int cfg_n = std::atoi(argv[5]);
+      int cfg_k = std::atoi(argv[6]);
+      m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      for (int i = 0; i < batch_size; i++) {
+        m_list[i] = cfg_m;
+        n_list[i] = cfg_n;
+        k_list[i] = cfg_k;
+      }
+    } else {
+      std::cerr << "Warning: Could not load config from '" << argv[3]
+                << "', using defaults (1024,4096,14336 x8)\n";
+      batch_size = 8;
+      m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+      for (int i = 0; i < batch_size; i++) {
+        m_list[i] = 1024;
+        n_list[i] = 4096;
+        k_list[i] = 14336;
+      }
+    }
+  } else {
+    batch_size = 8;
+    m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+    n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+    k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
+    for (int i = 0; i < batch_size; i++) {
+      m_list[i] = 1024;
+      n_list[i] = 4096;
+      k_list[i] = 14336;
+    }
+  }
 
   int *A_offset = (int *)malloc(sizeof(int) * (batch_size + 1));
   int *B_offset = (int *)malloc(sizeof(int) * (batch_size + 1));
   int *C_offset = (int *)malloc(sizeof(int) * (batch_size + 1));
-  int *m_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  int *n_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-  int *k_list = (int *)malloc(sizeof(int) * (batch_size + 1));
-
-  for (int x = 0; x < 8 * 10; x++) batch_size = 8;
-  int base_seq_len = 1024;
-
-  // batch별 M 값 다르게 할 때 사용하는 코드
-  int x0 = 32 * 0;
-  int x1 = 32 * 0;
-  int x2 = 32 * 0;
-  int x3 = 32 * 0;
-  int x4 = 32 * 0;
-  int x5 = 32 * 0;
-  int x6 = 32 * 0;
-  int x7 = 32 * 0;
-  int m_value[] = {
-      base_seq_len + x0, base_seq_len + x1, base_seq_len + x2, base_seq_len + x3,
-      base_seq_len + x4, base_seq_len + x5, base_seq_len + x6, base_seq_len + x7,
-  };
-  int m_batch_offset[] = {0, 1, 2, 3, 4, 5, 6, 7, 8};
-  int n_value[] = {4096};
-  int n_batch_offset[] = {0, 8};
-  int k_value[] = {14336};
-  int k_batch_offset[] = {0, 8};
-
-  set_mnk(m_list, n_list, k_list, batch_size, m_value, m_batch_offset, n_value, n_batch_offset,
-          k_value, k_batch_offset);
 
   printf("      B          M     N     K\n");
   int check_point = 0;
@@ -181,16 +200,17 @@ int main(int argc, char **argv) {
   CHECK_CUDA(cudaEventCreate(&start));
   CHECK_CUDA(cudaEventCreate(&stop));
 
-  // warming up the device for 50 times
-  for (int i = 0; i < 50; i++)
+  // warming up the device for 50 times (skip when profiling all kernels)
+  const int warmup = (kernel_number == 3) ? 2 : 50;
+  for (int i = 0; i < warmup; i++)
     runCublasTF32_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list, batch_size, A_offset,
                           B_offset, C_offset, alpha, beta);
   cudaDeviceSynchronize();
 
   CHECK_CUDA(cudaMemset(d_C_ref, 0, size_C_ref * sizeof(float)));
 
-  // baseline
-  // execute cuBLAS kernel and calculate execution time
+  // baseline (skip when kernel_number==3, profiling mode)
+  if (kernel_number != 3) {
   nvtxRangePushA("cuBLAS");
   CHECK_CUDA(cudaEventRecord(start));
   for (int i = 0; i < repeat_time; i++)
@@ -201,46 +221,88 @@ int main(int argc, char **argv) {
   CHECK_CUDA(cudaEventSynchronize(stop));
   CHECK_CUDA(cudaEventElapsedTime(&elapsed_time1, start, stop));
   nvtxRangePop();
-
-  // copy the result of cuBLAS kernel from device to host for validation
   CHECK_CUDA(cudaMemcpy(C_ref, d_C_ref, size_C_ref * sizeof(float), cudaMemcpyDeviceToHost));
-
-  // kernel to be compared
-  // execute the kernel and calculate execution time
-  nvtxRangePushA("Kernel");
-  CHECK_CUDA(cudaEventRecord(start));
-  for (int i = 0; i < repeat_time; i++) {
-    switch (kernel_number) {
-      case 0:
-        runCublasTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size, A_offset,
-                              B_offset, C_offset, alpha, beta);
-        break;
-      case 1:
-        runCublasGroupedTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
-                                     A_offset, B_offset, C_offset, alpha, beta);
-        break;
-      case 2:
-        run_double_buffering_tf_grouped(d_A, d_B, d_C, m_list, n_list, k_list[0], batch_size,
-                                        A_offset, B_offset, C_offset, d_m_list, d_n_list,
-                                        d_A_offset, d_B_offset, d_C_offset, alpha, beta);
-        break;
-      default:
-        std::cerr << "Invalid kernel number." << std::endl;
-        return EXIT_FAILURE;
-    }
   }
-  CHECK_CUDA(cudaEventRecord(stop));
-  CHECK_CUDA(cudaEventSynchronize(start));
-  CHECK_CUDA(cudaEventSynchronize(stop));
-  CHECK_CUDA(cudaEventElapsedTime(&elapsed_time2, start, stop));
-  nvtxRangePop();
 
-  // copy the result of the kernel from device to host for validation
-  CHECK_CUDA(cudaMemcpy(C, d_C, sizeof(float) * size_C, cudaMemcpyDeviceToHost));
+  // kernel 2는 단일 K만 지원. K가 배치별로 다르면 kernel 1로 폴백
+  bool k_uniform = true;
+  for (int i = 1; i < batch_size && k_uniform; i++) {
+    if (k_list[i] != k_list[0]) k_uniform = false;
+  }
 
-  // calculate the kernel's GFLOPS
+  if (kernel_number == 3) {
+    // mode 3: run all kernels sequentially for Nsight profiling (single report)
+    // prof_repeat=5: ncu profiles each kernel with detailed metrics; 1000 runs would
+    // cause huge .ncu-rep files and long runtime. 5 runs suffice for representative metrics.
+    const int prof_repeat = 5;
+    for (int k = 0; k <= 2; k++) {
+      int eff = (k == 2 && !k_uniform) ? 1 : k;
+      nvtxRangePushA((eff == 0) ? "cuBLAS_Loop" : (eff == 1) ? "cuBLAS_Grouped" : "Custom");
+      for (int i = 0; i < prof_repeat; i++) {
+        switch (eff) {
+          case 0:
+            runCublasTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
+                                  A_offset, B_offset, C_offset, alpha, beta);
+            break;
+          case 1:
+            runCublasGroupedTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
+                                         A_offset, B_offset, C_offset, alpha, beta);
+            break;
+          case 2:
+            run_double_buffering_tf_grouped(d_A, d_B, d_C, m_list, n_list, k_list[0], batch_size,
+                                            A_offset, B_offset, C_offset, d_m_list, d_n_list,
+                                            d_A_offset, d_B_offset, d_C_offset, alpha, beta);
+            break;
+        }
+      }
+      nvtxRangePop();
+      CHECK_CUDA(cudaDeviceSynchronize());
+    }
+    std::cout << "All kernels (0,1,2) run for profiling.\n";
+    elapsed_time1 = elapsed_time2 = 0;  // skip GFLOPS output
+  } else {
+    int effective_kernel = (kernel_number == 2 && !k_uniform) ? 1 : kernel_number;
+    if (kernel_number == 2 && !k_uniform) {
+      std::cerr << "Note: kernel 2 requires uniform K; using kernel 1 (cuBLAS Grouped) instead.\n";
+    }
+
+    // kernel to be compared
+    nvtxRangePushA("Kernel");
+    CHECK_CUDA(cudaEventRecord(start));
+    for (int i = 0; i < repeat_time; i++) {
+      switch (effective_kernel) {
+        case 0:
+          runCublasTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size, A_offset,
+                                B_offset, C_offset, alpha, beta);
+          break;
+        case 1:
+          runCublasGroupedTF32_with_TC(handle, d_A, d_B, d_C, m_list, n_list, k_list, batch_size,
+                                       A_offset, B_offset, C_offset, alpha, beta);
+          break;
+        case 2:
+          run_double_buffering_tf_grouped(d_A, d_B, d_C, m_list, n_list, k_list[0], batch_size,
+                                          A_offset, B_offset, C_offset, d_m_list, d_n_list,
+                                          d_A_offset, d_B_offset, d_C_offset, alpha, beta);
+          break;
+        default:
+          std::cerr << "Invalid kernel number." << std::endl;
+          return EXIT_FAILURE;
+      }
+    }
+    CHECK_CUDA(cudaEventRecord(stop));
+    CHECK_CUDA(cudaEventSynchronize(start));
+    CHECK_CUDA(cudaEventSynchronize(stop));
+    CHECK_CUDA(cudaEventElapsedTime(&elapsed_time2, start, stop));
+    nvtxRangePop();
+
+    // copy the result of the kernel from device to host for validation
+    CHECK_CUDA(cudaMemcpy(C, d_C, sizeof(float) * size_C, cudaMemcpyDeviceToHost));
+  }
+
+  // calculate the kernel's GFLOPS (skip when kernel_number==3)
   elapsed_time1 /= 1000;
   elapsed_time2 /= 1000;
+  if (kernel_number != 3) {
   long flops = 0;
   for (int batch = 0; batch < batch_size; batch++) {
     flops += (long)2 * m_list[batch] * n_list[batch] * k_list[batch];
@@ -251,31 +313,42 @@ int main(int argc, char **argv) {
   // validate kernel result
   bool validation;
   if (!verify_matrix(C_ref, C, m_list, n_list, batch_size)) {
-    validation = 1;
+    validation = 0;  // verification failed
     std::cout << "Result is different" << std::endl;
-
   } else {
-    validation = 1;
+    validation = 1;  // verification passed
     std::cout << "Result is correct" << std::endl;
   }
 
   // display the performance of each kernels
   if (validation == 1) {
-    if (strcmp(argv[2], "p") == 0) {
-      std::cout << elapsed_time1 / repeat_time << "," << elapsed_time2 / repeat_time << ",";
-      std::cout << gflops_ref << "," << gflops_kernel << std::endl;
+    float t_ref = elapsed_time1 / repeat_time;
+    float t_kernel = elapsed_time2 / repeat_time;
+    if (strcmp(argv[2], "p") == 0) {  // compact/print mode
+      std::cout << "\n--- Performance ---\n";
+      std::cout << "  Baseline (cuBLAS Loop):  " << (t_ref * 1000) << " ms/iter,  " << gflops_ref
+                << " GFLOPS\n";
+      std::cout << "  Kernel (0/1/2):          " << (t_kernel * 1000) << " ms/iter,  " << gflops_kernel
+                << " GFLOPS\n";
+      // machine-parseable line (for scripts)
+      std::cout << "  [raw] " << t_ref << "," << t_kernel << "," << gflops_ref << ","
+                << gflops_kernel << "\n";
     } else {
-      std::cout << elapsed_time1 / repeat_time << std::endl;
-      std::cout << gflops_ref << std::endl;
-      std::cout << elapsed_time2 / repeat_time << std::endl;
-      std::cout << gflops_kernel << std::endl;
+      std::cout << "Baseline time (s): " << t_ref << std::endl;
+      std::cout << "Baseline GFLOPS:  " << gflops_ref << std::endl;
+      std::cout << "Kernel time (s):  " << t_kernel << std::endl;
+      std::cout << "Kernel GFLOPS:    " << gflops_kernel << std::endl;
     }
+  }
   }
 
   free(A);
   free(B);
   free(C);
   free(C_ref);
+  free(m_list);
+  free(n_list);
+  free(k_list);
   CHECK_CUDA(cudaFree(d_A));
   CHECK_CUDA(cudaFree(d_B));
   CHECK_CUDA(cudaFree(d_C));

@@ -1,0 +1,3 @@
+Torch grouped GEMM validation passed.
+M,N,K: [8192, 4096, 2048, 2048], [8192, 4096, 2048, 2048], [2048, 2048, 2048, 2048]
+Torch grouped GEMM: 14.309 ms, 26413.2 GFLOPS

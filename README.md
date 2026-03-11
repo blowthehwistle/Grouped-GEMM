@@ -1,191 +1,141 @@
-# compare GEMM repository
+# Grouped GEMM Benchmark
 
-이 저장소는 CUDA 기반 GEMM 커널을 단계적으로 최적화하고, cuBLAS와 성능 및 정확도를 비교하기 위한 실험 코드 모음입니다.
+Grouped GEMM(배치별 상이한 M,N,K)에 대해 CUDA, Cutlass, PyTorch, Triton 백엔드를 동일 config로 벤치마크하고 Nsight Compute로 프로파일링합니다.
 
-**추가 예정**: Cutlass, PyTorch, Triton 버전 Grouped GEMM을 구현하고 각각의 퍼포먼스를 비교합니다.
+## Quick Start
 
-## 현재 구조
-
-```text
-gemm/
-├── bin/
-├── implementations/           # 백엔드별 GEMM 구현체
-│   ├── cuda/                  # 커스텀 CUDA
-│   │   ├── single_gemm.cu     # FP32 single GEMM
-│   │   ├── tensor_single_gemm.cu
-│   │   ├── batched_gemm.cu
-│   │   ├── grouped_gemm.cu    # FP32 grouped GEMM
-│   │   └── grouped_gemm_half.cu
-│   ├── cutlass/               # Cutlass (예정)
-│   ├── torch/                 # PyTorch (예정)
-│   └── triton/                # Triton
-│       └── grouped_gemm.py
-├── experiments/
-│   ├── compare_grouped/       # Grouped GEMM 백엔드 비교
-│   │   ├── run_all.py
-│   │   ├── compare.py
-│   │   └── config.yaml
-│   └── varying_prec/
-├── include/
-│   ├── cuda_kernels/
-│   ├── tensor_kernels/
-│   ├── cuda_kernels.cuh
-│   ├── tensor_kernels.cuh
-│   ├── runner.cuh
-│   └── helpers.h
-├── profiles/
-├── results/
-│   ├── benchmark/
-│   │   ├── cuda/
-│   │   ├── cutlass/
-│   │   ├── torch/
-│   │   └── triton/
-│   └── tuned/
-├── scripts/
-│   ├── autotuner/
-│   └── profile/
-├── tools/
-├── Makefile
-└── README.md
+```bash
+pip install -r experiments/compare_grouped/requirements.txt   # PyYAML
+make grouped
+python experiments/compare_grouped/run_all.py
 ```
-
-## 폴더별 역할
-
-### `implementations/`
-
-백엔드별 GEMM 구현체가 분리되어 있습니다.
-
-- **cuda/** - 커스텀 CUDA (FP32, Tensor Core, batched, grouped)
-- **cutlass/** - Cutlass 기반 (예정)
-- **torch/** - PyTorch 기반 (예정)
-- **triton/** - Triton 기반 grouped GEMM
-
-### `include/`
-
-핵심 CUDA 헤더가 모여 있습니다.
-
-- `include/cuda_kernels/` - FP32 계열 최적화 커널
-- `include/tensor_kernels/` - Tensor Core, batched, grouped GEMM 커널
-- `include/runner.cuh` - 커널 launch 래퍼와 cuBLAS 비교 실행 함수
-- `include/helpers.h` - CUDA 체크, 메모리 초기화, precision 변환, 결과 검증 유틸
-
-### `experiments/compare_grouped/`
-
-CUDA, Cutlass, PyTorch, Triton Grouped GEMM 성능 비교용 스크립트입니다.
-
-- `run_all.py` - 모든 백엔드 벤치마크 실행
-- `compare.py` - 결과 비교 및 시각화
-- `config.yaml` - 공통 설정
-
-### `scripts/`, `tools/`, `profiles/`, `results/`
-
-기존과 동일합니다.
 
 ## 빌드
 
-루트에서 기본 빌드:
+| Target | 빌드 산출물 |
+|--------|-------------|
+| `make grouped` | tmain_grouped (TF32), tmain_grouped_half (FP16), tmain_cutlass_grouped |
+| `make fp32` | FP32 단일 GEMM |
+| `make clean` | 빌드 산출물 삭제 |
+
+**Cutlass**: `CUTLASS_ROOT=/path/to/cutlass make grouped` (CUTLASS 2.x, sm80+ 필요)
+
+## 벤치마크 실행
+
+### 기본
 
 ```bash
-make
+python experiments/compare_grouped/run_all.py [--config config.yaml] [--backend cuda|triton|torch|cutlass|all]
 ```
 
-FP32 커널 실험용 실행 파일만 빌드:
+- `config.yaml`의 `grouped` 섹션에서 M,N,K 로드 (PyYAML 필요)
+- `--backend all`(기본): CUDA → Cutlass → Torch → Triton 순 실행
+- `--no-compare`: 통합 리포트 생략
+
+### Nsight Compute 프로파일링
 
 ```bash
-make fp32
+python experiments/compare_grouped/run_all.py --nsight [--nsight-out <dir>] [--ncu-extra "-c 100"]
 ```
 
-Grouped GEMM만 빌드:
+모든 백엔드를 Nsight Compute로 프로파일, `.ncu-rep` 저장:
+
+| 백엔드 | 리포트 파일 | 저장 경로 |
+|--------|-------------|----------|
+| CUDA TF32 | grouped_gemm_tf32_all | kernel 0,1,2 한 리포트에 |
+| CUDA FP16 | grouped_gemm_fp16_all | Loop, Grouped 한 리포트에 |
+| Cutlass | cutlass_grouped | results/benchmark/cutlass/nsight/ |
+| Triton | triton_grouped | results/benchmark/triton/nsight/ |
+| Torch | torch_grouped | results/benchmark/torch/nsight/ |
+
+- `--ncu-extra`: 추가 ncu 옵션 (예: `-c 100`, `--set full`)
+
+### 단일-커널 비교 (공정한 벤치마크)
+
+각 백엔드가 **1개의 커널**로 전체 grouped GEMM을 처리하는 경우만 비교:
 
 ```bash
-make grouped
+python experiments/compare_grouped/run_single_kernel_compare.py [--config config.yaml]
 ```
 
-정리:
+- 결과: `results/benchmark/single_kernel/`
+- CUDA kernel 1 (cuBLAS Grouped), Cutlass, Triton, Torch grouped_mm
+- 커널 런치 오버헤드 제거 → 순수 계산 성능 비교 가능
+
+### 결과 재확인
 
 ```bash
-make clean
-```
-
-`experiments/varying_prec/`는 별도 빌드가 가능합니다.
-
-```bash
-cd experiments/varying_prec
-make
-```
-
-## Grouped GEMM 비교 실행
-
-```bash
-# 1. CUDA 빌드
-make grouped
-
-# 2. 모든 백엔드 벤치마크 실행
-python experiments/compare_grouped/run_all.py
-
-# 3. 결과 비교
 python experiments/compare_grouped/compare.py
 ```
 
-## Grouped GEMM M, N, K 설정 방법
+## config.yaml
 
-Grouped GEMM의 행렬 크기(M, N, K)는 **config 파일** 또는 **CLI 인자**로 지정합니다. `run_all.py`로 한 번에 실행할 때나, 여러 백엔드를 같은 설정으로 돌릴 때 유용합니다.
-
-### 1. config.yaml 사용
-
-`experiments/compare_grouped/config.yaml`의 `grouped` 섹션에서 M, N, K 리스트를 설정합니다.
+`experiments/compare_grouped/config.yaml`:
 
 ```yaml
 grouped:
-  m: [1024, 512, 256, 128]
-  n: [1024, 512, 256, 128]
-  k: [1024, 512, 256, 128]
+  m: [8192, 4096, 2048, 2048]
+  n: [8192, 4096, 2048, 2048]
+  k: [2048, 2048, 2048, 2048]
 ```
+
+- **리스트**: 배치별 상이한 M,N,K
+- **스칼라 + batch_size**: 모든 배치 동일 크기
+
+## 백엔드 요약
+
+| 백엔드 | Precision | 커널 |
+|--------|-----------|------|
+| CUDA TF32 | TF32 | cuBLAS Loop, cuBLAS Grouped API, Custom Double Buffering |
+| CUDA FP16 | FP16 | cuBLAS Loop (K uniform), cuBLAS Grouped |
+| Cutlass | FP16 | CUTLASS Grouped |
+| Torch | BF16 | grouped_mm / matmul loop |
+| Triton | FP16 | Triton 커널 |
+
+- 정량 비교 시 precision 차이 주의 (TF32 vs BF16 vs FP16)
+
+## 프로젝트 구조
+
+```
+gemm/
+├── implementations/           # 백엔드별 구현
+│   ├── cuda/                  grouped_gemm.cu (TF32), grouped_gemm_half.cu (FP16)
+│   ├── cutlass/               cutlass_grouped_gemm.cu
+│   ├── torch/                 torch_grouped_gemm.py
+│   └── triton/                triton_grouped_gemm.py
+├── experiments/compare_grouped/
+│   ├── run_all.py             벤치마크 + Nsight 프로파일링
+│   ├── run_single_kernel_compare.py   단일-커널 백엔드만 비교
+│   ├── compare.py             결과 통합 리포트
+│   ├── grouped_config.py      M,N,K config 로더 (YAML/CLI)
+│   ├── script_utils.py        implementations/에서 config 로드용
+│   ├── config.yaml
+│   └── requirements.txt       PyYAML
+├── include/
+│   ├── config_io.h            config 파일 I/O (grouped_gemm 공용)
+│   ├── helpers.h
+│   ├── runner.cuh
+│   └── cuda_kernels/, tensor_kernels/
+├── bin/                       빌드 산출물
+├── results/benchmark/         벤치마크 결과, Nsight 리포트
+└── Makefile
+```
+
+## 바이너리 직접 실행
 
 ```bash
-python experiments/compare_grouped/run_all.py --config experiments/compare_grouped/config.yaml
+./bin/tmain_grouped <kernel> p [config.txt]
+# kernel: 0=cuBLAS Loop, 1=Grouped API, 2=Custom, 3=all(프로파일용)
+
+./bin/tmain_grouped_half <kernel> p [config.txt]
+# kernel: 0=Loop, 1=Grouped, 2=all(프로파일용)
+
+./bin/tmain_cutlass_grouped config.txt p
 ```
 
-### 2. CLI 인자로 지정
+## 의존성
 
-`--m`, `--n`, `--k`로 콤마 구분 리스트를 넘깁니다.
-
-```bash
-python implementations/torch/torch_grouped_gemm.py --m 1024,512,256 --n 1024,512,256 --k 1024,512,256
-python implementations/triton/triton_grouped_gemm.py --benchmark-only --m 1024,512 --n 1024,512 --k 1024,512
-```
-
-### 3. 우선순위
-
-CLI 인자 > config 파일 > 기본값 (`[1024, 512, 256, 128]`)
-
-### 4. Python 코드에서 사용
-
-```python
-# experiments/compare_grouped 기준으로 실행하거나, sys.path에 experiments 추가 후
-from grouped_config import load_grouped_sizes
-
-m_list, n_list, k_list = load_grouped_sizes(
-    config_path="config.yaml",
-    # CLI 스타일 override
-    m="1024,512,256",
-    n="1024,512,256",
-    k="1024,512,256",
-)
-```
-
-## 추천 읽기 순서
-
-1. `README.md`
-2. `Makefile`
-3. `include/helpers.h`
-4. `include/runner.cuh`
-5. `include/cuda_kernels.cuh`
-6. `include/tensor_kernels.cuh`
-7. `implementations/cuda/tensor_single_gemm.cu`
-8. `implementations/cuda/grouped_gemm.cu`
-
-## 메모
-
-- autotuner 스크립트 일부는 커널 파라미터나 matrix size를 소스 내부 상수에 의존합니다.
-- Cutlass, PyTorch grouped GEMM 구현은 추후 추가 예정입니다.
+- CUDA 12.x, cuBLAS
+- PyYAML (config 로드)
+- PyTorch, Triton (Torch/Triton 백엔드)
+- CUTLASS 2.x (Cutlass 백엔드, sm80+)

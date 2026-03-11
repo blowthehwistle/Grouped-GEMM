@@ -75,6 +75,8 @@ def run_cuda_grouped(config_path=None):
         )
         out = (result.stdout or "") + (result.stderr or "")
         lines.append(out.rstrip())
+        if "Could not load config" in out or "using defaults (1024,4096,14336" in out:
+            print(f"[CUDA] WARNING: Config file open failed, binary used defaults (1024,4096,14336 x8)", flush=True)
         if result.returncode != 0:
             lines.append(f"[Kernel {kernel_num} failed with exit code {result.returncode}]")
             print(f"[CUDA] Kernel {kernel_num} ({KERNEL_NAMES[kernel_num]}) FAILED (exit {result.returncode})", flush=True)
@@ -91,6 +93,8 @@ def run_cuda_grouped(config_path=None):
             result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
             out = (result.stdout or "") + (result.stderr or "")
             lines.append(out.rstrip())
+            if "Could not load config" in out or "using defaults (1024,4096,14336" in out:
+                print(f"[CUDA FP16] WARNING: Config file open failed, binary used defaults (1024,4096,14336 x8)", flush=True)
             if result.returncode != 0:
                 lines.append(f"[{FP16_KERNEL_NAMES[k]} failed with exit code {result.returncode}]")
                 print(f"[CUDA FP16] {FP16_KERNEL_NAMES[k]} FAILED (exit {result.returncode})", flush=True)

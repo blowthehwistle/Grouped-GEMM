@@ -84,6 +84,8 @@ int main(int argc, char **argv) {
         k_list[i] = cfg_k;
       }
     } else {
+      std::cerr << "Warning: Could not load config from '" << argv[3]
+                << "', using defaults (1024,4096,14336 x8)\n";
       batch_size = 8;
       m_list = (int *)malloc(sizeof(int) * 9);
       n_list = (int *)malloc(sizeof(int) * 9);

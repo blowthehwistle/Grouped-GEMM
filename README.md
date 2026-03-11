@@ -50,6 +50,18 @@ python experiments/compare_grouped/run_all.py --nsight [--nsight-out <dir>] [--n
 
 - `--ncu-extra`: 추가 ncu 옵션 (예: `-c 100`, `--set full`)
 
+### 단일-커널 비교 (공정한 벤치마크)
+
+각 백엔드가 **1개의 커널**로 전체 grouped GEMM을 처리하는 경우만 비교:
+
+```bash
+python experiments/compare_grouped/run_single_kernel_compare.py [--config config.yaml]
+```
+
+- 결과: `results/benchmark/single_kernel/`
+- CUDA kernel 1 (cuBLAS Grouped), Cutlass, Triton, Torch grouped_mm
+- 커널 런치 오버헤드 제거 → 순수 계산 성능 비교 가능
+
 ### 결과 재확인
 
 ```bash
@@ -93,6 +105,7 @@ gemm/
 │   └── triton/                triton_grouped_gemm.py
 ├── experiments/compare_grouped/
 │   ├── run_all.py             벤치마크 + Nsight 프로파일링
+│   ├── run_single_kernel_compare.py   단일-커널 백엔드만 비교
 │   ├── compare.py             결과 통합 리포트
 │   ├── grouped_config.py      M,N,K config 로더 (YAML/CLI)
 │   ├── script_utils.py        implementations/에서 config 로드용

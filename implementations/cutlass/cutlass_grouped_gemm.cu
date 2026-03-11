@@ -24,7 +24,7 @@
 #include "cutlass/util/distribution.h"
 #include "cutlass/util/reference/device/tensor_fill.h"
 #include "cutlass/util/reference/host/tensor_compare.h"
-#include "cutlass/util/reference/device/gemm_complex.h"
+#include "cutlass/util/reference/device/gemm.h"
 
 #include "helpers.h"
 
@@ -146,6 +146,7 @@ int main(int argc, char **argv) {
   cutlass::DeviceAllocation<ElementB> block_B(total_B);
   cutlass::DeviceAllocation<ElementOutput> block_C(total_C);
   cutlass::DeviceAllocation<ElementOutput> block_D(total_D);
+  cutlass::DeviceAllocation<ElementOutput> block_Ref(total_D);
   cutlass::DeviceAllocation<ElementA *> ptr_A(batch_size);
   cutlass::DeviceAllocation<ElementB *> ptr_B(batch_size);
   cutlass::DeviceAllocation<ElementOutput *> ptr_C(batch_size);
@@ -226,8 +227,50 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // Reference check (Cutlass 내부 verify - 간단화: 생략 가능)
+  // Run once to get output
+  gemm.run();
+
+  // Compute reference: for each batch, ref = alpha * A*B + beta * C
+  for (int i = 0; i < batch_size; i++) {
+    int M = m_vec[i], N = n_vec[i], K = k_vec[i];
+    cutlass::gemm::GemmCoord prob(M, N, K);
+    LayoutA layout_a(lda_host[i]);
+    LayoutB layout_b(ldb_host[i]);
+    LayoutC layout_c(ldc_host[i]);
+    cutlass::TensorRef<ElementA, LayoutA> ref_a(block_A.get() + offset_A[i], layout_a);
+    cutlass::TensorRef<ElementB, LayoutB> ref_b(block_B.get() + offset_B[i], layout_b);
+    cutlass::TensorRef<ElementOutput, LayoutC> ref_c(block_C.get() + offset_C[i], layout_c);
+    cutlass::TensorRef<ElementOutput, LayoutC> ref_d(block_Ref.get() + offset_D[i], layout_c);
+    cutlass::reference::device::compute_gemm<
+        ElementA, LayoutA, ElementB, LayoutB, ElementOutput, LayoutC,
+        float, ElementAccumulator>(
+        prob, alpha, ref_a, ref_b, beta, ref_c, ref_d, ElementAccumulator(0));
+  }
+  CHECK_CUDA(cudaDeviceSynchronize());
+
+  // Copy to host and compare
+  std::vector<ElementOutput> host_D(total_D), host_Ref(total_D);
+  CHECK_CUDA(cudaMemcpy(host_D.data(), block_D.get(), total_D * sizeof(ElementOutput),
+                        cudaMemcpyDeviceToHost));
+  CHECK_CUDA(cudaMemcpy(host_Ref.data(), block_Ref.get(), total_D * sizeof(ElementOutput),
+                        cudaMemcpyDeviceToHost));
+
+  using MatrixCoord = cutlass::MatrixCoord;
   bool passed = true;
+  ElementOutput epsilon(0.1f);   // FP16 tolerance
+  ElementOutput floor(1e-3f);
+  for (int i = 0; i < batch_size; i++) {
+    int M = m_vec[i], N = n_vec[i];
+    cutlass::TensorView<ElementOutput, LayoutC> view_D(
+        host_D.data() + offset_D[i], LayoutC(M), MatrixCoord(M, N));
+    cutlass::TensorView<ElementOutput, LayoutC> view_Ref(
+        host_Ref.data() + offset_D[i], LayoutC(M), MatrixCoord(M, N));
+    if (!cutlass::reference::host::TensorRelativelyEquals(view_D, view_Ref, epsilon, floor)) {
+      passed = false;
+      break;
+    }
+  }
+
   if (passed) {
     std::cout << "Result is correct\n";
   } else {

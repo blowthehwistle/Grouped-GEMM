@@ -36,6 +36,7 @@ KERNEL_NAMES = {
     1: "cuBLAS Grouped API",
     2: "Custom Double Buffering",
 }
+FP16_KERNEL_NAMES = {0: "CUDA FP16 Loop", 1: "CUDA FP16 Grouped"}
 
 
 def run_cuda_grouped(config_path=None):
@@ -81,10 +82,26 @@ def run_cuda_grouped(config_path=None):
             print(f"[CUDA] Kernel {kernel_num} ({KERNEL_NAMES[kernel_num]}) done", flush=True)
         lines.append("")
 
+    exe_half = REPO_ROOT / "bin" / "tmain_grouped_half"
+    if exe_half.exists():
+        for k in (0, 1):
+            section = f"--- {FP16_KERNEL_NAMES[k]} ---"
+            lines.append(section)
+            cmd = [str(exe_half), str(k), "p", str(cuda_config_file.resolve())]
+            result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
+            out = (result.stdout or "") + (result.stderr or "")
+            lines.append(out.rstrip())
+            if result.returncode != 0:
+                lines.append(f"[{FP16_KERNEL_NAMES[k]} failed with exit code {result.returncode}]")
+                print(f"[CUDA FP16] {FP16_KERNEL_NAMES[k]} FAILED (exit {result.returncode})", flush=True)
+            else:
+                print(f"[CUDA FP16] {FP16_KERNEL_NAMES[k]} done", flush=True)
+            lines.append("")
+
     with open(out_file, "w") as f:
         f.write("\n".join(lines))
 
-    print(f"[CUDA] all done, result saved to {out_file}", flush=True)
+    print(f"[CUDA] all done (TF32 + FP16), result saved to {out_file}", flush=True)
     return out_file
 
 

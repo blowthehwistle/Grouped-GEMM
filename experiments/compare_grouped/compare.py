@@ -53,6 +53,17 @@ def _parse_cuda(content: str) -> Tuple[Optional[Dict[str, Tuple[float, float, Op
             val = _check_validation(section)
             results[KERNEL_NAMES[k]] = (ms, gflops_kernel, val)
 
+    for name in ("CUDA FP16 Loop", "CUDA FP16 Grouped"):
+        pat = rf"--- {re.escape(name)} ---(.*?)\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
+        m = re.search(pat, content, re.DOTALL)
+        if m:
+            section = m.group(1)
+            t_kernel = float(m.group(3))
+            gflops_kernel = float(m.group(5))
+            ms = t_kernel * 1000
+            val = _check_validation(section)
+            results[name] = (ms, gflops_kernel, val)
+
     return results if results else None, config
 
 

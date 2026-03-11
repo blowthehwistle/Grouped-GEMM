@@ -150,6 +150,18 @@ def _validation_str(val: Optional[bool]) -> str:
     return "N/A"
 
 
+def write_results_csv(rows: List, path: Path) -> None:
+    """Write benchmark rows to CSV. rows: (name, ms, gflops, validation)."""
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        f.write("Backend,Time_ms,GFLOPS,Validation\n")
+        for name, ms, gflops, val in rows:
+            vstr = _validation_str(val)
+            f.write(f"{name},{ms:.4f},{gflops:.2f},{vstr}\n")
+
+
 def format_unified_report(config_str: Optional[str], rows: List) -> str:
     """통일된 형식 리포트 문자열 생성. rows: (name, ms, gflops, validation)."""
     lines = [

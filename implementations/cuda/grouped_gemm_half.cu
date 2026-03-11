@@ -150,6 +150,8 @@ int main(int argc, char **argv) {
   cudaDeviceSynchronize();
   CHECK_CUDA(cudaMemset(d_C_ref, 0, size_C * sizeof(__half)));
 
+  // kernel_number==2: Nsight profile mode. 5 runs suffice (ncu collects per-kernel metrics;
+  // 1000 would bloat .ncu-rep and runtime without adding useful profiling data).
   int repeat = (kernel_number == 2) ? 5 : 1000;
   bool k_uniform = true;
   for (int i = 1; i < batch_size && k_uniform; i++)

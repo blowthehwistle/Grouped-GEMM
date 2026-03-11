@@ -570,7 +570,7 @@ def run_benchmark(
     n_list: List[int],
     k_list: List[int],
     warmup: int = 50,
-    repeat: int = 100,
+    repeat: int = 1000,
 ) -> tuple:
     """config/CLI로 받은 M,N,K로 벤치마크. (elapsed_ms, gflops) 반환."""
     group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
@@ -623,7 +623,7 @@ if __name__ == "__main__":
     if _add_args:
         _add_args(parser)
     parser.add_argument("--warmup", type=int, default=50)
-    parser.add_argument("--repeat", type=int, default=100)
+    parser.add_argument("--repeat", type=int, default=1000)
     parser.add_argument("--no-config", action="store_true")
     parser.add_argument("--benchmark-only", action="store_true", help="config 모드로만 실행, perf_report 스킵")
     args = parser.parse_args()

@@ -111,7 +111,7 @@ def run_benchmark(
     n_list: List[int],
     k_list: List[int],
     warmup: int = 50,
-    repeat: int = 100,
+    repeat: int = 1000,
 ) -> Tuple[float, float]:
     """벤치마크 실행. (elapsed_ms, gflops) 반환. CUDA Event 기반 측정 (cuBLAS와 동일)."""
     group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
@@ -137,13 +137,13 @@ def run_benchmark(
 
 if __name__ == "__main__":
     m_list, n_list, k_list = [1024] * 8, [4096] * 8, [14336] * 8
-    warmup, repeat = 50, 100
+    warmup, repeat = 50, 1000
 
     if load_grouped_sizes and add_grouped_args and DEFAULT_CONFIG:
         parser = argparse.ArgumentParser()
         add_grouped_args(parser)
         parser.add_argument("--warmup", type=int, default=50)
-        parser.add_argument("--repeat", type=int, default=100)
+        parser.add_argument("--repeat", type=int, default=1000)
         parser.add_argument("--no-config", action="store_true")
         args = parser.parse_args()
         warmup, repeat = args.warmup, args.repeat

@@ -278,8 +278,12 @@ int main(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // Warmup
-  gemm.run();
+  // Warmup (50 iterations, matching CUDA/Torch/Triton)
+  const int warmup = 50;
+  for (int i = 0; i < warmup; i++) {
+    gemm.run();
+  }
+  CHECK_CUDA(cudaDeviceSynchronize());
 
   int repeat = 1000;
   cudaEvent_t start_ev, stop_ev;

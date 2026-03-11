@@ -265,9 +265,13 @@ def main():
     if not args.no_compare and success > 0:
         sys.path.insert(0, str(CONFIG_DIR))
         try:
-            from compare import load_and_parse, format_unified_report
+            from compare import load_and_parse, format_unified_report, write_results_csv
             config_str, rows = load_and_parse()
             print("\n" + format_unified_report(config_str, rows))
+            if rows:
+                csv_path = REPO_ROOT / "results" / "benchmark" / "benchmark_results.csv"
+                write_results_csv(rows, csv_path)
+                print(f"CSV written to {csv_path}")
         except ImportError:
             pass
         finally:

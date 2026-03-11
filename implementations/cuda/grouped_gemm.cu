@@ -232,6 +232,8 @@ int main(int argc, char **argv) {
 
   if (kernel_number == 3) {
     // mode 3: run all kernels sequentially for Nsight profiling (single report)
+    // prof_repeat=5: ncu profiles each kernel with detailed metrics; 1000 runs would
+    // cause huge .ncu-rep files and long runtime. 5 runs suffice for representative metrics.
     const int prof_repeat = 5;
     for (int k = 0; k <= 2; k++) {
       int eff = (k == 2 && !k_uniform) ? 1 : k;

@@ -10,7 +10,7 @@ Grouped GEMM 단일-커널 백엔드만 비교 (공정한 비교용).
   - Torch: grouped_mm (1 kernel) — 조건: BF16, 동일 K·N일 때만. 아니면 loop fallback
 
 run_all.py와 동일 config 사용. 결과는 results/benchmark/single_kernel/ 에 저장.
---nsight 시 .ncu-rep 파일 생성 (results/benchmark/single_kernel/cuda/nsight/).
+기본적으로 .ncu-rep 생성. --no-nsight 시 비활성화.
 
 공정성: 커널 런치 오버헤드를 제거해, 순수 계산 성능만 비교 가능.
 """
@@ -340,13 +340,14 @@ def main():
     parser.add_argument("--backend", choices=["cuda", "triton", "torch", "cutlass", "all"],
                         default="all", help="Backend to run")
     parser.add_argument("--no-compare", action="store_true", help="Skip unified report")
-    parser.add_argument("--nsight", action="store_true", help="Profile with Nsight Compute")
+    parser.add_argument("--no-nsight", action="store_true",
+                        help="Disable Nsight profiling (default: generate .ncu-rep)")
     parser.add_argument("--nsight-out", type=Path, default=None, help="Dir for .ncu-rep files")
     parser.add_argument("--ncu-extra", type=str, default=None, help="Extra ncu options")
     args = parser.parse_args()
 
     config_path = args.config or (CONFIG_DIR / "config.yaml" if (CONFIG_DIR / "config.yaml").exists() else None)
-    nsight_opts = dict(nsight=args.nsight, nsight_out=args.nsight_out, ncu_extra=args.ncu_extra)
+    nsight_opts = dict(nsight=not args.no_nsight, nsight_out=args.nsight_out, ncu_extra=args.ncu_extra)
 
     print("=== Single-Kernel Grouped GEMM Benchmark ===\n", flush=True)
 
@@ -368,6 +369,17 @@ def main():
         config_str, rows = load_and_parse_single_kernel()
         if rows:
             print("\n" + format_unified_report(config_str, rows))
+            sys.path.insert(0, str(CONFIG_DIR))
+            try:
+                from compare import write_results_csv
+                csv_path = BENCHMARK_DIR / "results.csv"
+                write_results_csv(rows, csv_path)
+                print(f"CSV written to {csv_path}")
+            except ImportError:
+                pass
+            finally:
+                if str(CONFIG_DIR) in sys.path:
+                    sys.path.remove(str(CONFIG_DIR))
 
     return 0 if success > 0 else 1
 

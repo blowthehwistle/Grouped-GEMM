@@ -148,14 +148,9 @@ int main(int argc, char **argv) {
     if (k_list[i] != k_list[0]) k_uniform = false;
 
   const int warmup = (kernel_number == 2) ? 2 : 50;
-  for (int i = 0; i < warmup; i++) {
-    if (k_uniform)
-      runCublasTF16_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list[0], batch_size,
-                            A_offset, B_offset, C_offset, alpha, beta);
-    else
-      runCublasGroupedTF16_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list, batch_size,
-                                   A_offset, B_offset, C_offset, alpha, beta);
-  }
+  for (int i = 0; i < warmup; i++)
+    runCublasTF16_Loop_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list, batch_size,
+                               A_offset, B_offset, C_offset, alpha, beta);
   cudaDeviceSynchronize();
   CHECK_CUDA(cudaMemset(d_C_ref, 0, size_C * sizeof(__half)));
 
@@ -181,17 +176,12 @@ int main(int argc, char **argv) {
     std::cout << "All FP16 kernels (0,1) run for profiling.\n";
     ok = true;
   } else {
-  // Reference: Loop (TF32와 동일) when k_uniform; Grouped when K varies (Loop cannot run).
+  // Reference: 항상 iterative Loop (cublasGemmEx per batch, varying M,N,K 지원)
   nvtxRangePushA("cuBLAS");
   CHECK_CUDA(cudaEventRecord(start));
-  for (int i = 0; i < repeat; i++) {
-    if (k_uniform)
-      runCublasTF16_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list[0], batch_size,
-                            A_offset, B_offset, C_offset, alpha, beta);
-    else
-      runCublasGroupedTF16_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list, batch_size,
-                                   A_offset, B_offset, C_offset, alpha, beta);
-  }
+  for (int i = 0; i < repeat; i++)
+    runCublasTF16_Loop_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list, batch_size,
+                               A_offset, B_offset, C_offset, alpha, beta);
   CHECK_CUDA(cudaEventRecord(stop));
   CHECK_CUDA(cudaEventSynchronize(stop));
   CHECK_CUDA(cudaEventElapsedTime(&elapsed_time1, start, stop));
@@ -236,7 +226,7 @@ int main(int argc, char **argv) {
     float t_ref = elapsed_time1 / repeat;
     float t_ker = elapsed_time2 / repeat;
     std::cout << "\n--- Performance ---\n";
-    std::cout << "  Baseline (cuBLAS " << (k_uniform ? "Loop" : "Grouped") << " FP16): "
+    std::cout << "  Baseline (cuBLAS Loop FP16): "
               << (t_ref * 1000) << " ms/iter, " << gflops_ref << " GFLOPS\n";
     std::cout << "  Kernel (0/1):                " << (t_ker * 1000) << " ms/iter, " << gflops_ker << " GFLOPS\n";
     std::cout << "  [raw] " << t_ref << "," << t_ker << "," << gflops_ref << "," << gflops_ker << "\n";

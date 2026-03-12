@@ -360,13 +360,31 @@ void runCublasTF16_with_TC(cublasHandle_t handle, __half *A, __half *B, __half *
                            int *n_list, int k, int batch_size, int *A_offset, int *B_offset,
                            int *C_offset, float alpha, float beta) {
   /**
-   * @brief Performs a strided batched GEMM (General Matrix Multiply) operation using cuBLAS.
-   * This function computes multiple matrix multiplications in a batched manner.
+   * @brief Performs batched GEMM via iterative cublasGemmEx (uniform K).
    */
-  // cublasSetMathMode(handle, CUBLAS_TENSOR_OP_MATH);
   for (int batch = 0; batch < batch_size; batch++) {
     int m = m_list[batch];
     int n = n_list[batch];
+    __half *A_ptr = A + A_offset[batch];
+    __half *B_ptr = B + B_offset[batch];
+    __half *C_ptr = C + C_offset[batch];
+    cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha, B_ptr, CUDA_R_16F, n, A_ptr,
+                 CUDA_R_16F, k, &beta, C_ptr, CUDA_R_16F, n, CUBLAS_COMPUTE_32F,
+                 CUBLAS_GEMM_DEFAULT);
+  }
+}
+
+void runCublasTF16_Loop_with_TC(cublasHandle_t handle, __half *A, __half *B, __half *C,
+                                 int *m_list, int *n_list, int *k_list, int batch_size,
+                                 int *A_offset, int *B_offset, int *C_offset, float alpha,
+                                 float beta) {
+  /**
+   * @brief Reference: iterative cublasGemmEx per batch (supports varying M,N,K).
+   */
+  for (int batch = 0; batch < batch_size; batch++) {
+    int m = m_list[batch];
+    int n = n_list[batch];
+    int k = k_list[batch];
     __half *A_ptr = A + A_offset[batch];
     __half *B_ptr = B + B_offset[batch];
     __half *C_ptr = C + C_offset[batch];

@@ -5,5 +5,5 @@ grouped:
   k: [2048, 2048, 2048, 2048]
 
 benchmark:
-  repeat: 1000
+  repeat: 100
   warmup: 50

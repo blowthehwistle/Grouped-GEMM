@@ -10,5 +10,5 @@ grouped:
   k: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096]
 
 benchmark:
-  repeat: 1000
+  repeat: 100
   warmup: 50

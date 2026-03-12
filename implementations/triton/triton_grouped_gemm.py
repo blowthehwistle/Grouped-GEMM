@@ -83,6 +83,43 @@ def num_sms():
             'BLOCK_SIZE_K': 64,
             'NUM_SM': num_sms(),
         }),
+        # Small block configs for expert_skewed, extreme_thin (M can be 8, 4, 2, 1)
+        triton.Config({
+            'BLOCK_SIZE_M': 32,
+            'BLOCK_SIZE_N': 128,
+            'BLOCK_SIZE_K': 32,
+            'NUM_SM': num_sms(),
+        }),
+        triton.Config({
+            'BLOCK_SIZE_M': 16,
+            'BLOCK_SIZE_N': 128,
+            'BLOCK_SIZE_K': 32,
+            'NUM_SM': num_sms(),
+        }),
+        triton.Config({
+            'BLOCK_SIZE_M': 8,
+            'BLOCK_SIZE_N': 64,
+            'BLOCK_SIZE_K': 32,
+            'NUM_SM': num_sms(),
+        }),
+        triton.Config({
+            'BLOCK_SIZE_M': 4,
+            'BLOCK_SIZE_N': 64,
+            'BLOCK_SIZE_K': 32,
+            'NUM_SM': num_sms(),
+        }),
+        triton.Config({
+            'BLOCK_SIZE_M': 2,
+            'BLOCK_SIZE_N': 64,
+            'BLOCK_SIZE_K': 32,
+            'NUM_SM': num_sms(),
+        }),
+        triton.Config({
+            'BLOCK_SIZE_M': 1,
+            'BLOCK_SIZE_N': 64,
+            'BLOCK_SIZE_K': 32,
+            'NUM_SM': num_sms(),
+        }),
     ],
     key=['group_size'],
 )

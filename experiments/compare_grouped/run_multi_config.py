@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 여러 config로 run_all.py를 순차 실행하고, config별로 결과를 저장합니다.
 

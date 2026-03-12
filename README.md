@@ -5,7 +5,16 @@ Grouped GEMM(배치별 상이한 M,N,K)에 대해 CUDA, Cutlass, PyTorch, Triton
 ## Quick Start
 
 ```bash
-pip install -r experiments/compare_grouped/requirements.txt   # PyYAML
+# 1. 가상환경 생성 및 활성화
+python3 -m venv .venv
+source .venv/bin/activate   # Linux/macOS
+# Windows: .venv\Scripts\activate
+
+# 2. 의존성 설치
+pip install -r requirements.txt
+pip install torch   # CUDA 지원: pip install torch (자동으로 Triton 포함)
+
+# 3. 빌드 및 실행
 make grouped
 python experiments/compare_grouped/run_all.py
 ```
@@ -133,9 +142,37 @@ gemm/
 ./bin/tmain_cutlass_grouped config.txt p
 ```
 
-## 의존성
+## 가상환경 세팅
 
-- CUDA 12.x, cuBLAS
-- PyYAML (config 로드)
-- PyTorch, Triton (Torch/Triton 백엔드)
-- CUTLASS 2.x (Cutlass 백엔드, sm80+)
+```bash
+# 프로젝트 루트에서
+cd /path/to/gemm
+
+# venv 생성
+python3 -m venv .venv
+
+# 활성화 (매번 새 터미널마다)
+source .venv/bin/activate   # Linux/macOS
+# .venv\Scripts\activate    # Windows
+
+# 패키지 설치
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install torch   # Triton은 PyTorch와 함께 설치됨
+```
+
+- PyTorch CUDA 버전: [pytorch.org](https://pytorch.org)에서 환경에 맞는 설치 명령 확인
+- `.venv`는 `.gitignore`에 추가 권장
+
+| 항목 | 버전 |
+|------|------|
+| CUDA | 12.x (Makefile 기본: 12.5) |
+| cuBLAS | CUDA 번들 |
+| Python | 3.8+ |
+| PyYAML | >= 5.1 |
+| PyTorch | CUDA 지원 빌드 (grouped_mm: sm80+) |
+| Triton | PyTorch 번들 또는 별도 설치 |
+| CUTLASS | 2.x (Cutlass 백엔드, sm80+) |
+
+- **GPU**: sm_80 (Ampere) 이상 권장 (Makefile: sm_86)
+- CUDA 경로: `Makefile`의 `CUDA_PATH` 수정 또는 `export CUDA_PATH=/path/to/cuda`

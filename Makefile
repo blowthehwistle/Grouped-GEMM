@@ -1,8 +1,8 @@
 CUDA_PATH = /usr/local/cuda-12.5
 CC = $(CUDA_PATH)/bin/nvcc
 
-# CUTLASS: 예) export CUTLASS_ROOT=/path/to/cutlass 또는 Makefile에서 수정
-CUTLASS_ROOT = $(CURDIR)/../cutlass
+# CUTLASS path
+CUTLASS_ROOT = $(CURDIR)/cutlass
 
 # implementations/cuda 에서 소스 로드
 CUDA_DIR = implementations/cuda

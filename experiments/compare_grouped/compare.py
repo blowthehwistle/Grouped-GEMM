@@ -42,9 +42,9 @@ def _parse_cuda(content: str) -> Tuple[Optional[Dict[str, Tuple[float, float, Op
             m = re.search(r"Batch size: (\d+)", content)
             config = f"Batch size: {m.group(1)}" if m else ""
 
-    # Match [raw] only within the same section (don't bleed into next "--- " section)
-    # (?:...) prevents matching across section boundaries
-    _section_body = r"(?:(?!\n--- )[\s\S])*?"
+    # Match [raw] only within the same section. Do NOT stop at "--- Performance ---"
+    # (which appears before [raw]); stop only at next section header (Kernel N or CUDA FP16).
+    _section_body = r"(?:(?!\n--- (?:Kernel \d \(|CUDA FP16 (?:Loop|Grouped) ))[\s\S])*?"
     for k in (0, 1, 2):
         pat = rf"--- Kernel {k} \([^)]+\) ---{_section_body}\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
         m = re.search(pat, content)

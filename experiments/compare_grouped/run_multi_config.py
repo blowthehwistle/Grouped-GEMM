@@ -139,6 +139,15 @@ def main():
         print(f"  - {name}/")
     print("=" * 60)
 
+    # CUDA 요청했는데 결과가 없으면 빌드 안내 (다른 머신에서 make grouped 누락 시)
+    if args.backend in ("cuda", "all"):
+        cuda_exists = any(
+            (results_base / name / "cuda" / "grouped_gemm.txt").exists()
+            for _, name in config_list
+        )
+        if not cuda_exists and not (REPO_ROOT / "bin" / "tmain_grouped").exists():
+            print("\n[Tip] CUDA results missing. Run 'make grouped' on this machine to build bin/tmain_grouped.", flush=True)
+
     if args.summary and summary_data:
         print("\n--- Summary ---")
         for config_name, config_str, rows in summary_data:

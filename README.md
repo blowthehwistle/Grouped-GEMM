@@ -100,6 +100,9 @@ python experiments/compare_grouped/run_multi_config.py --summary-csv results/sum
 python experiments/compare_grouped/compare.py [--benchmark-dir results/benchmark/<subdir>]
 ```
 
+- `run_multi_config.py` 사용 시: `--benchmark-dir results/benchmark/<config명>` (예: `results/benchmark/default`)
+- **CUDA가 리포트에 없을 때**: `make grouped`로 `bin/tmain_grouped`, `bin/tmain_grouped_half` 빌드 필요. Mac(darwin)은 CUDA 미지원이므로 Torch/Triton/Cutlass만 실행됨.
+
 ## config.yaml
 
 `experiments/compare_grouped/config.yaml`:
@@ -159,6 +162,7 @@ grouped:
 - **2가지 FP16 커널**: Loop(K uniform 시), Grouped(항상)
 - **특징**: NVIDIA 공식 cuBLAS 기반, 안정적. Custom은 연구용 최적화.
 - **제약**: Loop는 커널 수 = batch_size, Grouped/Custom은 1 커널.
+- **FP16 validation**: reference는 TF32와 동일하게 **Loop**(K uniform 시), **Grouped**(K 상이 시) 사용. Loop이 cublasGemmEx 개별 호출로 더 직접적인 기준.
 - **Validation FAIL (expert_skewed 등)**: cuBLAS Grouped API, Custom Double Buffering은 **M/N < tile size(128)** 인 config에서 검증 실패 가능. Custom 커널은 partial tile 경계 처리 미구현. Grouped API는 cuBLAS 내부 동작 차이로 Loop와 미세 불일치 가능.
 
 #### Cutlass

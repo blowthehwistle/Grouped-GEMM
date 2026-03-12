@@ -41,7 +41,7 @@ def load_unified_config(config_path):
             sys.path.remove(str(CONFIG_DIR))
 
 
-def _run_cmd(cmd, capture=True, timeout=120):
+def _run_cmd(cmd, capture=True, timeout=300):
     """subprocess 실행. capture 시 (stdout+stderr) 반환."""
     r = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=capture, text=True, timeout=timeout)
     return (r.stdout or "") + (r.stderr or ""), r.returncode
@@ -137,20 +137,20 @@ def run_cuda_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_
 
     # TF32 kernel 1 (cuBLAS Grouped)
     lines.append("--- Kernel 1 (cuBLAS Grouped API) ---")
-    out, ret = _run_cmd([str(exe), "1", "p", cfg_arg], timeout=120)
+    out, ret = _run_cmd([str(exe), "1", "p", cfg_arg], timeout=300)
     lines.append(out.rstrip())
     lines.append("")
 
     # TF32 kernel 2 (Custom Double Buffering)
     lines.append("--- Kernel 2 (Custom Double Buffering) ---")
-    out, ret = _run_cmd([str(exe), "2", "p", cfg_arg], timeout=120)
+    out, ret = _run_cmd([str(exe), "2", "p", cfg_arg], timeout=300)
     lines.append(out.rstrip())
     lines.append("")
 
     # FP16 kernel 1
     if exe_half.exists():
         lines.append("--- CUDA FP16 Grouped ---")
-        out, ret = _run_cmd([str(exe_half), "1", "p", cfg_arg], timeout=120)
+        out, ret = _run_cmd([str(exe_half), "1", "p", cfg_arg], timeout=300)
         lines.append(out.rstrip())
         lines.append("")
 
@@ -186,7 +186,7 @@ def run_cutlass_single_kernel(config_path=None, nsight=False, nsight_out=None, n
                 nsight_dir / "cutlass_grouped_single", "Cutlass", ncu_extra)
         else:
             with open(out_dir / "grouped_gemm.txt", "w") as f:
-                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
+                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
             print("[Cutlass] done (1 kernel)", flush=True)
         return out_dir / "grouped_gemm.txt"
     except Exception as e:
@@ -255,7 +255,7 @@ def run_torch_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu
                 nsight_dir / "torch_grouped_single", "Torch", ncu_extra)
         else:
             with open(out_dir / "grouped_gemm.txt", "w") as f:
-                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
+                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
             label = "1 kernel (grouped_mm)" if (same_k and same_n) else "loop (fallback)"
             print(f"[Torch] done ({label})", flush=True)
         return out_dir / "grouped_gemm.txt"

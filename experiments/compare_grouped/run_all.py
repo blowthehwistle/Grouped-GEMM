@@ -48,7 +48,7 @@ def _wrap_ncu(cmd, rep_path, ncu_extra=None, timeout=600):
     return subprocess.run(ncu_cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
 
 
-def _run_cmd(cmd, capture=True, timeout=120):
+def _run_cmd(cmd, capture=True, timeout=300):
     """subprocess 실행. capture 시 (stdout+stderr) 반환."""
     r = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=capture, text=True, timeout=timeout)
     return (r.stdout or "") + (r.stderr or ""), r.returncode
@@ -81,7 +81,7 @@ def _run_backend_with_nsight(cmd, out_file, rep_path, label, ncu_extra=None):
     return ok
 
 
-def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
+def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None, results_base=None):
     exe = REPO_ROOT / "bin" / "tmain_grouped"
     exe_half = REPO_ROOT / "bin" / "tmain_grouped_half"
     if not exe.exists():
@@ -96,7 +96,8 @@ def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=
     if (m_list, n_list, k_list) == DEFAULT_SHAPES:
         print("WARNING: Loaded defaults - config not found or PyYAML missing", flush=True)
 
-    out_dir = REPO_ROOT / "results" / "benchmark" / "cuda"
+    benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
+    out_dir = benchmark_base / "cuda"
     nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
     if nsight:
@@ -115,7 +116,7 @@ def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=
         "",
     ]
     cfg_arg = str(cuda_config.resolve())
-    timeout = 600 if nsight else 120
+    timeout = 600 if nsight else 300
 
     # Nsight: kernel 3 (TF32 all), kernel 2 (FP16 all)
     if nsight:
@@ -161,13 +162,14 @@ def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=
     return out_file
 
 
-def run_triton_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
+def run_triton_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None, results_base=None):
     script = REPO_ROOT / "implementations" / "triton" / "triton_grouped_gemm.py"
     if not script.exists():
         print("Warning: triton_grouped_gemm.py not found.")
         return None
 
-    out_dir = REPO_ROOT / "results" / "benchmark" / "triton"
+    benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
+    out_dir = benchmark_base / "triton"
     nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
     config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
@@ -192,13 +194,14 @@ def run_triton_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extr
         return None
 
 
-def run_torch_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
+def run_torch_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None, results_base=None):
     script = REPO_ROOT / "implementations" / "torch" / "torch_grouped_gemm.py"
     if not script.exists():
         print("Warning: torch_grouped_gemm.py not found.")
         return None
 
-    out_dir = REPO_ROOT / "results" / "benchmark" / "torch"
+    benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
+    out_dir = benchmark_base / "torch"
     nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
     config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
@@ -211,7 +214,7 @@ def run_torch_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra
                                      nsight_dir / "torch_grouped", "Torch", ncu_extra)
         else:
             with open(out_dir / "grouped_gemm.txt", "w") as f:
-                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
+                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
             print("[Torch] done", flush=True)
         return out_dir / "grouped_gemm.txt"
     except Exception as e:
@@ -219,14 +222,15 @@ def run_torch_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra
         return None
 
 
-def run_cutlass_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
+def run_cutlass_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=None, results_base=None):
     exe = REPO_ROOT / "bin" / "tmain_cutlass_grouped"
     if not exe.exists():
         print("Warning: Cutlass binary not found. Run 'make cutlass_grouped' first.")
         return None
 
     m_list, n_list, k_list = load_unified_config(config_path)
-    out_dir = REPO_ROOT / "results" / "benchmark" / "cutlass"
+    benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
+    out_dir = benchmark_base / "cutlass"
     nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -243,7 +247,7 @@ def run_cutlass_grouped(config_path=None, nsight=False, nsight_out=None, ncu_ext
                                      nsight_dir / "cutlass_grouped", "Cutlass", ncu_extra)
         else:
             with open(out_dir / "grouped_gemm.txt", "w") as f:
-                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=120)
+                subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
             print("[Cutlass] done", flush=True)
         return out_dir / "grouped_gemm.txt"
     except Exception as e:
@@ -254,6 +258,8 @@ def run_cutlass_grouped(config_path=None, nsight=False, nsight_out=None, ncu_ext
 def main():
     parser = argparse.ArgumentParser(description="Grouped GEMM benchmark (all backends)")
     parser.add_argument("--config", type=Path, default=None, help="Config YAML path")
+    parser.add_argument("--results-subdir", type=str, default=None,
+                        help="Save results to results/benchmark/<subdir>/ instead of results/benchmark/")
     parser.add_argument("--backend", choices=["cuda", "triton", "torch", "cutlass", "all"],
                         default="all", help="Backend to run")
     parser.add_argument("--no-compare", action="store_true", help="Skip unified report")
@@ -263,17 +269,19 @@ def main():
     args = parser.parse_args()
 
     config_path = args.config or (CONFIG_DIR / "config.yaml" if (CONFIG_DIR / "config.yaml").exists() else None)
+    results_base = (REPO_ROOT / "results" / "benchmark" / args.results_subdir) if args.results_subdir else None
     nsight_opts = dict(nsight=args.nsight, nsight_out=args.nsight_out, ncu_extra=args.ncu_extra)
+    run_opts = dict(**nsight_opts, results_base=results_base)
 
     results = []
     if args.backend in ("cuda", "all"):
-        results.append(("cuda", run_cuda_grouped(config_path, **nsight_opts)))
+        results.append(("cuda", run_cuda_grouped(config_path, **run_opts)))
     if args.backend in ("triton", "all"):
-        results.append(("triton", run_triton_grouped(config_path, **nsight_opts)))
+        results.append(("triton", run_triton_grouped(config_path, **run_opts)))
     if args.backend in ("torch", "all"):
-        results.append(("torch", run_torch_grouped(config_path, **nsight_opts)))
+        results.append(("torch", run_torch_grouped(config_path, **run_opts)))
     if args.backend in ("cutlass", "all"):
-        results.append(("cutlass", run_cutlass_grouped(config_path, **nsight_opts)))
+        results.append(("cutlass", run_cutlass_grouped(config_path, **run_opts)))
 
     success = sum(1 for _, r in results if r is not None)
     print(f"\nCompleted: {success}/{len(results)} backends")
@@ -282,10 +290,11 @@ def main():
         sys.path.insert(0, str(CONFIG_DIR))
         try:
             from compare import load_and_parse, format_unified_report, write_results_csv
-            config_str, rows = load_and_parse()
+            benchmark_dir = results_base if results_base else REPO_ROOT / "results" / "benchmark"
+            config_str, rows = load_and_parse(benchmark_dir=benchmark_dir)
             print("\n" + format_unified_report(config_str, rows))
             if rows:
-                csv_path = REPO_ROOT / "results" / "benchmark" / "benchmark_results.csv"
+                csv_path = benchmark_dir / "benchmark_results.csv"
                 write_results_csv(rows, csv_path)
                 print(f"CSV written to {csv_path}")
         except ImportError:

@@ -97,13 +97,14 @@ def _parse_cutlass(content: str) -> Optional[Tuple[float, float, Optional[bool]]
     return None
 
 
-def load_and_parse():
+def load_and_parse(benchmark_dir=None):
     """각 백엔드 결과 파일 파싱. config, rows 반환. rows: (name, ms, gflops, validation)."""
     config_str = None
     rows = []  # (name, ms, gflops, validation: True/False/None)
+    base = Path(benchmark_dir) if benchmark_dir is not None else BENCHMARK_DIR
 
     for backend in ["cuda", "torch", "triton", "cutlass"]:
-        path = BENCHMARK_DIR / backend / "grouped_gemm.txt"
+        path = base / backend / "grouped_gemm.txt"
         if not path.exists():
             continue
         try:
@@ -192,11 +193,13 @@ def main():
     parser = argparse.ArgumentParser(description="Compare Grouped GEMM benchmark results")
     parser.add_argument("--output", type=Path, default=None,
                         help="Output file path (default: results/tuned/compare_grouped.txt)")
+    parser.add_argument("--benchmark-dir", type=Path, default=None,
+                        help="Benchmark results dir (default: results/benchmark)")
     parser.add_argument("--no-write", action="store_true",
                         help="Only print to stdout, do not write file")
     args = parser.parse_args()
 
-    config_str, rows = load_and_parse()
+    config_str, rows = load_and_parse(benchmark_dir=args.benchmark_dir)
     report = format_unified_report(config_str, rows)
 
     if not args.no_write:

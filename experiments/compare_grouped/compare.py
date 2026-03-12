@@ -42,24 +42,29 @@ def _parse_cuda(content: str) -> Tuple[Optional[Dict[str, Tuple[float, float, Op
             m = re.search(r"Batch size: (\d+)", content)
             config = f"Batch size: {m.group(1)}" if m else ""
 
+    # Match [raw] only within the same section (don't bleed into next "--- " section)
+    # (?:...) prevents matching across section boundaries
+    _section_body = r"(?:(?!\n--- )[\s\S])*?"
     for k in (0, 1, 2):
-        pat = rf"--- Kernel {k} \([^)]+\) ---(.*?)\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
-        m = re.search(pat, content, re.DOTALL)
+        pat = rf"--- Kernel {k} \([^)]+\) ---{_section_body}\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
+        m = re.search(pat, content)
         if m:
-            section = m.group(1)
-            t_kernel = float(m.group(3))
-            gflops_kernel = float(m.group(5))
+            full_match = m.group(0)
+            section = full_match[:full_match.index("[raw]")]
+            t_kernel = float(m.group(2))
+            gflops_kernel = float(m.group(4))
             ms = t_kernel * 1000
             val = _check_validation(section)
             results[KERNEL_NAMES[k]] = (ms, gflops_kernel, val)
 
     for name in ("CUDA FP16 Loop", "CUDA FP16 Grouped"):
-        pat = rf"--- {re.escape(name)} ---(.*?)\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
-        m = re.search(pat, content, re.DOTALL)
+        pat = rf"--- {re.escape(name)} ---{_section_body}\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
+        m = re.search(pat, content)
         if m:
-            section = m.group(1)
-            t_kernel = float(m.group(3))
-            gflops_kernel = float(m.group(5))
+            full_match = m.group(0)
+            section = full_match[:full_match.index("[raw]")]
+            t_kernel = float(m.group(2))
+            gflops_kernel = float(m.group(4))
             ms = t_kernel * 1000
             val = _check_validation(section)
             results[name] = (ms, gflops_kernel, val)

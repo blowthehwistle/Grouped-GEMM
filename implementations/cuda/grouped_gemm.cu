@@ -320,25 +320,22 @@ int main(int argc, char **argv) {
     std::cout << "Result is correct" << std::endl;
   }
 
-  // display the performance of each kernels
-  if (validation == 1) {
-    float t_ref = elapsed_time1 / repeat_time;
-    float t_kernel = elapsed_time2 / repeat_time;
-    if (strcmp(argv[2], "p") == 0) {  // compact/print mode
-      std::cout << "\n--- Performance ---\n";
-      std::cout << "  Baseline (cuBLAS Loop):  " << (t_ref * 1000) << " ms/iter,  " << gflops_ref
-                << " GFLOPS\n";
-      std::cout << "  Kernel (0/1/2):          " << (t_kernel * 1000) << " ms/iter,  " << gflops_kernel
-                << " GFLOPS\n";
-      // machine-parseable line (for scripts)
-      std::cout << "  [raw] " << t_ref << "," << t_kernel << "," << gflops_ref << ","
-                << gflops_kernel << "\n";
-    } else {
-      std::cout << "Baseline time (s): " << t_ref << std::endl;
-      std::cout << "Baseline GFLOPS:  " << gflops_ref << std::endl;
-      std::cout << "Kernel time (s):  " << t_kernel << std::endl;
-      std::cout << "Kernel GFLOPS:    " << gflops_kernel << std::endl;
-    }
+  // display the performance of each kernels (always, so compare.py can parse per-kernel ms/gflops)
+  float t_ref = elapsed_time1 / repeat_time;
+  float t_kernel = elapsed_time2 / repeat_time;
+  if (strcmp(argv[2], "p") == 0) {  // compact/print mode
+    std::cout << "\n--- Performance ---\n";
+    std::cout << "  Baseline (cuBLAS Loop):  " << (t_ref * 1000) << " ms/iter,  " << gflops_ref
+              << " GFLOPS\n";
+    std::cout << "  Kernel (0/1/2):          " << (t_kernel * 1000) << " ms/iter,  " << gflops_kernel
+              << " GFLOPS\n";
+    std::cout << "  [raw] " << t_ref << "," << t_kernel << "," << gflops_ref << ","
+              << gflops_kernel << "\n";
+  } else {
+    std::cout << "Baseline time (s): " << t_ref << std::endl;
+    std::cout << "Baseline GFLOPS:  " << gflops_ref << std::endl;
+    std::cout << "Kernel time (s):  " << t_kernel << std::endl;
+    std::cout << "Kernel GFLOPS:    " << gflops_kernel << std::endl;
   }
   }
 

@@ -26,9 +26,11 @@ except ImportError:
 
 
 def _supports_grouped_mm() -> bool:
-    """torch._grouped_mm 사용 가능 여부 (BF16, SM>=80)"""
+    """torch.nn.functional.grouped_mm 사용 가능 여부 (PyTorch 2.10+, BF16, SM>=80)"""
     if not torch.cuda.is_available():
         return False
+    if not hasattr(torch.nn.functional, 'grouped_mm'):
+        return False  # PyTorch < 2.10
     try:
         cap = torch.cuda.get_device_capability()
         return cap[0] >= 8  # SM >= 80

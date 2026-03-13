@@ -1,3 +1,4 @@
 # Grouped GEMM benchmark - Python 의존성
 # PyTorch/Triton은 CUDA 버전에 맞게 별도 설치: pip install torch
 pyyaml>=5.1
+matplotlib>=3.5  # plot_benchmark.py

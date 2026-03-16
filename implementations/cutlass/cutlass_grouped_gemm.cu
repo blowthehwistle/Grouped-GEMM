@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
 
   int64_t total_A = 0, total_B = 0, total_C = 0, total_D = 0;
   for (int i = 0; i < batch_size; i++) {
-    offset_A[i] = total_A;
+    offset_A[i] = total_A; 
     offset_B[i] = total_B;
     offset_C[i] = total_C;
     offset_D[i] = total_D;
@@ -134,7 +134,7 @@ int main(int argc, char **argv) {
     total_C += M * N;
     total_D += M * N;
   }
-  offset_A[batch_size] = total_A;
+  offset_A[batch_size] = total_A; // padding for the last batch
   offset_B[batch_size] = total_B;
   offset_C[batch_size] = total_C;
   offset_D[batch_size] = total_D;
@@ -204,7 +204,7 @@ int main(int argc, char **argv) {
   std::printf("%6d-%-5d%6d%6d%6d\n", check_point, batch_size - 1, m_vec[check_point],
               n_vec[check_point], k_vec[check_point]);
 
-  int threadblock_count = GemmGrouped::sufficient(problem_sizes.data(), batch_size);
+  int threadblock_count = GemmGrouped::sufficient(problem_sizes.data(), batch_size); // get current runnable # of blocks
   if (!threadblock_count) {
     std::cerr << "CUTLASS Grouped GEMM: insufficient hardware resources." << std::endl;
     return EXIT_FAILURE;
@@ -213,7 +213,7 @@ int main(int argc, char **argv) {
   float alpha = 1.0f, beta = 0.0f;
   typename GemmGrouped::EpilogueOutputOp::Params epilogue_op(alpha, beta);
 
-  typename GemmGrouped::Arguments args(
+  typename GemmGrouped::Arguments args( 
       problem_sizes_device.get(), batch_size, threadblock_count, epilogue_op, ptr_A.get(),
       ptr_B.get(), ptr_C.get(), ptr_D.get(), lda.get(), ldb.get(), ldc.get(), ldd.get(),
       problem_sizes.data());

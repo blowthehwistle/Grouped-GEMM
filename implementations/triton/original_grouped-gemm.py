@@ -1,3 +1,10 @@
+"""
+Group GEMM
+============================
+This group gemm kernel launches a fixed number of CTA to compute a group
+of gemms. The scheduling is static and we do it on device.
+"""
+
 # Copyright (c) 2023 - 2025 NVIDIA Corporation & Affiliates. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining
@@ -19,20 +26,17 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-import argparse
-from pathlib import Path
-from typing import List, Optional
-
+from typing import Optional
 import torch
 
 import triton
 import triton.language as tl
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 def is_cuda():
-    return torch.cuda.is_available()
+    return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
 def supports_tma():
@@ -83,25 +87,6 @@ def num_sms():
             'BLOCK_SIZE_K': 64,
             'NUM_SM': num_sms(),
         }),
-        # Small block configs (tl.dot requires all dims >= 16; mask handles partial tiles)
-        triton.Config({
-            'BLOCK_SIZE_M': 32,
-            'BLOCK_SIZE_N': 128,
-            'BLOCK_SIZE_K': 32,
-            'NUM_SM': num_sms(),
-        }),
-        triton.Config({
-            'BLOCK_SIZE_M': 16,
-            'BLOCK_SIZE_N': 128,
-            'BLOCK_SIZE_K': 32,
-            'NUM_SM': num_sms(),
-        }),
-        triton.Config({
-            'BLOCK_SIZE_M': 16,
-            'BLOCK_SIZE_N': 64,
-            'BLOCK_SIZE_K': 32,
-            'NUM_SM': num_sms(),
-        }),
     ],
     key=['group_size'],
 )
@@ -119,9 +104,6 @@ def grouped_matmul_kernel(
     g_lds,
     # number of gemms
     group_size,
-    # workload info for autotune (max(m_list), sum of ceil(m/128)*ceil(n/128) approx)
-    max_m,
-    total_tiles,
     # number of virtual SM
     NUM_SM: tl.constexpr,
     # tile sizes
@@ -133,10 +115,10 @@ def grouped_matmul_kernel(
     last_problem_end = 0
     for g in range(group_size):
         # get the gemm size of the current problem
-        gm = tl.load(group_gemm_sizes + g * 3)     # mnk가 3개니까 
-        gn = tl.load(group_gemm_sizes + g * 3 + 1)  
+        gm = tl.load(group_gemm_sizes + g * 3)
+        gn = tl.load(group_gemm_sizes + g * 3 + 1)
         gk = tl.load(group_gemm_sizes + g * 3 + 2)
-        num_m_tiles = tl.cdiv(gm, BLOCK_SIZE_M)     #ceiling division
+        num_m_tiles = tl.cdiv(gm, BLOCK_SIZE_M)
         num_n_tiles = tl.cdiv(gn, BLOCK_SIZE_N)
         num_tiles = num_m_tiles * num_n_tiles
         # iterate through the tiles in the current gemm problem
@@ -154,143 +136,81 @@ def grouped_matmul_kernel(
             tile_m_idx = tile_idx_in_gemm // num_n_tiles
             tile_n_idx = tile_idx_in_gemm % num_n_tiles
 
-            # Full tiles only (input padded to block multiples) - no mask
-            offs_am = tile_m_idx * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M) #현재 타일이 담당하는 M축 인덱스 벡터
+            # do regular gemm here
+            offs_am = tile_m_idx * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
             offs_bn = tile_n_idx * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
             offs_k = tl.arange(0, BLOCK_SIZE_K)
-
-            # 현재 읽어야 하는 타일의 절대주소 계산
-            a_ptrs = a_ptr + offs_am[:, None] * lda + offs_k[None, :]   # (BLOCK_SIZE_M, 1) 의 열벡터
-            b_ptrs = b_ptr + offs_k[:, None] * ldb + offs_bn[None, :]   # (1, BLOCK_SIZE_K) 의 행벡터
+            a_ptrs = a_ptr + offs_am[:, None] * lda + offs_k[None, :]
+            b_ptrs = b_ptr + offs_k[:, None] * ldb + offs_bn[None, :]
             accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-
             for kk in range(0, tl.cdiv(k, BLOCK_SIZE_K)):
-                tl.multiple_of(a_ptrs, [16, 16])    # hint to use vectorized load/
+                # hint to Triton compiler to do proper loop pipelining
+                tl.multiple_of(a_ptrs, [16, 16])
                 tl.multiple_of(b_ptrs, [16, 16])
-                a = tl.load(a_ptrs)   # 절대주소 보고 GMEM -> Register로 가져오기 / load 와 아래의 연산이 overlap 가능 (Triton이 최적화)
+                # assume full tile for now
+                a = tl.load(a_ptrs)
                 b = tl.load(b_ptrs)
-                accumulator += tl.dot(a, b) # matrix multiplication
-                a_ptrs += BLOCK_SIZE_K    
-                b_ptrs += BLOCK_SIZE_K * ldb    # 다음 타일로 이동
+                accumulator += tl.dot(a, b)
+                a_ptrs += BLOCK_SIZE_K
+                b_ptrs += BLOCK_SIZE_K * ldb
             c = accumulator.to(tl.float16)
 
             offs_cm = tile_m_idx * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
             offs_cn = tile_n_idx * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-            c_ptrs = c_ptr + ldc * offs_cm[:, None] + offs_cn[None, :]  # c의 절대주소 
+            c_ptrs = c_ptr + ldc * offs_cm[:, None] + offs_cn[None, :]
+
+            # assumes full tile for now
             tl.store(c_ptrs, c)
 
             # go to the next tile by advancing NUM_SM
-            tile_idx += NUM_SM  #Block swizzling 로직 가능
+            tile_idx += NUM_SM
 
         # get ready to go to the next gemm problem
         last_problem_end = last_problem_end + num_tiles
 
 
-# Pad to block multiples so we never need masks (no partial tiles)
-PAD_ALIGN = 128  # max BLOCK_SIZE_M/N/K in configs; all configs divide 128
-
-
-# triton 예제 코드에서는 mnk가 block size의 배수라고 가정. 
-# 여기를 어떻게 처리하느냐에 따라 퍼포먼스가 달라질 것 같다. 
-def _pad_grouped_for_triton(
-    group_A: List[torch.Tensor],
-    group_B: List[torch.Tensor],
-    m_list: List[int],
-    n_list: List[int],
-    k_list: List[int],
-):
-    """Pad A, B to multiples of PAD_ALIGN so kernel can use mask-free load/store."""
-    padded_A, padded_B = [], []
-    padded_m, padded_n, padded_k = [], [], []
-    for i, (M, N, K) in enumerate(zip(m_list, n_list, k_list)):
-        Mp = max(M, 16)
-        Np = max(N, 16)
-        Kp = max(K, 16)
-        Mp = ((Mp + PAD_ALIGN - 1) // PAD_ALIGN) * PAD_ALIGN
-        Np = ((Np + PAD_ALIGN - 1) // PAD_ALIGN) * PAD_ALIGN
-        Kp = ((Kp + PAD_ALIGN - 1) // PAD_ALIGN) * PAD_ALIGN
-        A, B = group_A[i], group_B[i]
-        if Mp > M or Np > N or Kp > K:
-            Ap = torch.zeros((Mp, Kp), device=A.device, dtype=A.dtype)
-            Ap[:M, :K] = A
-            Bp = torch.zeros((Kp, Np), device=B.device, dtype=B.dtype)
-            Bp[:K, :N] = B
-            padded_A.append(Ap)
-            padded_B.append(Bp)
-            padded_m.append(Mp)
-            padded_n.append(Np)
-            padded_k.append(Kp)
-        else:
-            padded_A.append(A)
-            padded_B.append(B)
-            padded_m.append(M)
-            padded_n.append(N)
-            padded_k.append(K)
-    return padded_A, padded_B, padded_m, padded_n, padded_k
-
-
-def make_grouped_matrices(
-    m_list: List[int],
-    n_list: List[int],
-    k_list: List[int],
-    dtype: torch.dtype = torch.float16,
-    device=None,
-):
-    """M, N, K 리스트로 group_A, group_B 생성."""
-    dev = device or DEVICE
-    group_A, group_B = [], []
-    for M, N, K in zip(m_list, n_list, k_list):
-        A = torch.rand((M, K), device=dev, dtype=dtype)
-        B = torch.rand((K, N), device=dev, dtype=dtype)
-        group_A.append(A)
-        group_B.append(B)
-    return group_A, group_B
-
-
 def group_gemm_fn(group_A, group_B):
     assert len(group_A) == len(group_B)
-    m_list = [a.shape[0] for a in group_A]
-    n_list = [b.shape[1] for b in group_B]
-    k_list = [a.shape[1] for a in group_A]
-
-    padded_A, padded_B, padded_m, padded_n, padded_k = _pad_grouped_for_triton(
-        group_A, group_B, m_list, n_list, k_list
-    )
-    group_size = len(padded_A)
+    group_size = len(group_A)
 
     A_addrs = []
     B_addrs = []
     C_addrs = []
     g_sizes = []
     g_lds = []
-    group_C_pad = []
+    group_C = []
     for i in range(group_size):
-        A, B = padded_A[i], padded_B[i]
-        Mp, Np, Kp = padded_m[i], padded_n[i], padded_k[i]
-        C = torch.empty((Mp, Np), device=DEVICE, dtype=A.dtype)
-        group_C_pad.append(C)
+        A = group_A[i]
+        B = group_B[i]
+        assert A.shape[1] == B.shape[0]
+        M, K = A.shape
+        K, N = B.shape
+        C = torch.empty((M, N), device=DEVICE, dtype=A.dtype)
+        group_C.append(C)
         A_addrs.append(A.data_ptr())
         B_addrs.append(B.data_ptr())
         C_addrs.append(C.data_ptr())
-        g_sizes += [Mp, Np, Kp]
+        g_sizes += [M, N, K]
         g_lds += [A.stride(0), B.stride(0), C.stride(0)]
 
+    # note these are device tensors
     d_a_ptrs = torch.tensor(A_addrs, device=DEVICE)
     d_b_ptrs = torch.tensor(B_addrs, device=DEVICE)
     d_c_ptrs = torch.tensor(C_addrs, device=DEVICE)
     d_g_sizes = torch.tensor(g_sizes, dtype=torch.int32, device=DEVICE)
     d_g_lds = torch.tensor(g_lds, dtype=torch.int32, device=DEVICE)
-    max_m = max(padded_m)
-    total_tiles = sum(((m + 127) // 128) * ((n + 127) // 128) for m, n in zip(padded_m, padded_n))
+    # we use a fixed number of CTA, and it's auto-tunable
     grid = lambda META: (META['NUM_SM'], )
     grouped_matmul_kernel[grid](
-        d_a_ptrs, d_b_ptrs, d_c_ptrs,
-        d_g_sizes, d_g_lds, group_size,
-        max_m=max_m, total_tiles=total_tiles,
+        d_a_ptrs,
+        d_b_ptrs,
+        d_c_ptrs,
+        d_g_sizes,
+        d_g_lds,
+        group_size,
     )
 
-    return [C[:m, :n].contiguous().clone() for C, m, n in zip(group_C_pad, m_list, n_list)]
+    return group_C
 
 
 tma_configs = [
@@ -305,7 +225,7 @@ tma_configs = [
 
 @triton.autotune(
     tma_configs,
-    key=['group_a_ptrs', 'group_b_ptrs', 'group_c_ptrs', 'group_size'],
+    key=['group_size'],
 )
 @triton.jit
 def grouped_matmul_tma_kernel(
@@ -449,42 +369,47 @@ def group_gemm_tma_fn(group_A, group_B):
     return group_C
 
 
-_DEFAULT_M = [1024, 512, 256, 128]
-_DEFAULT_N = [1024, 512, 256, 128]
-_DEFAULT_K = [1024, 512, 256, 128]
+group_m = [1024, 512, 256, 128]
+group_n = [1024, 512, 256, 128]
+group_k = [1024, 512, 256, 128]
+group_A = []
+group_B = []
+group_B_T = []
+assert len(group_m) == len(group_n)
+assert len(group_n) == len(group_k)
+group_size = len(group_m)
+for i in range(group_size):
+    M = group_m[i]
+    N = group_n[i]
+    K = group_k[i]
+    A = torch.rand((M, K), device=DEVICE, dtype=torch.float16)
+    B = torch.rand((K, N), device=DEVICE, dtype=torch.float16)
+    B_T = B.T.contiguous()
+    group_A.append(A)
+    group_B.append(B)
+    group_B_T.append(B_T)
 
+tri_out = group_gemm_fn(group_A, group_B)
+ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
+for i in range(group_size):
+    assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=1e-2)
 
-def _validate_default_shapes():
-    """기본 shape으로 Triton vs reference 검증."""
-    m, n, k = _DEFAULT_M, _DEFAULT_N, _DEFAULT_K
-    group_A = [torch.rand((M, K), device=DEVICE, dtype=torch.float16) for M, K in zip(m, k)]
-    group_B = [torch.rand((K, N), device=DEVICE, dtype=torch.float16) for K, N in zip(k, n)]
-    tri_out = group_gemm_fn(group_A, group_B)
-    ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
-    for i in range(len(m)):
-        assert torch.allclose(ref_out[i], tri_out[i], atol=1e-2, rtol=1e-2)
-    if supports_tma():
-        group_B_T = [b.T.contiguous() for b in group_B]
-        tri_tma = group_gemm_tma_fn(group_A, group_B_T)
-        for i in range(len(m)):
-            assert torch.allclose(ref_out[i], tri_tma[i], atol=1e-2, rtol=1e-2)
+if supports_tma():
+    tri_tma_out = group_gemm_tma_fn(group_A, group_B_T)
+    for i in range(group_size):
+        assert torch.allclose(ref_out[i], tri_tma_out[i], atol=1e-2, rtol=1e-2)
 
 
 # only launch the kernel, no tensor preparation here to remove all overhead
-def triton_perf_fn(a_ptrs, b_ptrs, c_ptrs, sizes, lds, group_size, max_m=0, total_tiles=0):
-    if max_m == 0 and total_tiles == 0:
-        # fallback: derive from sizes tensor (M,N,K per group: [M0,N0,K0, M1,N1,K1, ...])
-        s = sizes.cpu() if sizes.is_cuda else sizes
-        sizes_list = s.tolist() if s.dim() == 1 else s.reshape(-1).tolist()
-        m_vals = [sizes_list[i * 3] for i in range(group_size)]
-        n_vals = [sizes_list[i * 3 + 1] for i in range(group_size)]
-        max_m = max(m_vals)
-        total_tiles = sum(((m + 127) // 128) * ((n + 127) // 128) for m, n in zip(m_vals, n_vals))
+def triton_perf_fn(a_ptrs, b_ptrs, c_ptrs, sizes, lds, group_size):
     grid = lambda META: (META['NUM_SM'], )
     grouped_matmul_kernel[grid](
-        a_ptrs, b_ptrs, c_ptrs,
-        sizes, lds, group_size,
-        max_m=max_m, total_tiles=total_tiles,
+        a_ptrs,
+        b_ptrs,
+        c_ptrs,
+        sizes,
+        lds,
+        group_size,
     )
 
 
@@ -552,20 +477,17 @@ def benchmark_square_matrices(N, provider):
     d_g_sizes = torch.tensor(g_sizes, dtype=torch.int32, device=DEVICE)
     d_g_lds = torch.tensor(g_lds, dtype=torch.int32, device=DEVICE)
 
-    max_m = N
-    total_tiles = group_size * ((N + 127) // 128) * ((N + 127) // 128)
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'cublas':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_perf_fn(group_A, group_B), quantiles=quantiles)
     if provider == 'triton':
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size,
-                                  max_m=max_m, total_tiles=total_tiles), quantiles=quantiles)
+            lambda: triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size), quantiles=quantiles)
     if provider == 'triton-tma':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size, dtype=torch.
                                        float16), quantiles=quantiles)
-    return ms, max_ms, min_ms
+    return ms, min_ms, max_ms
 
 
 @triton.testing.perf_report(
@@ -626,137 +548,18 @@ def benchmark_batches(M, provider):
     d_g_lds = torch.tensor(g_lds, dtype=torch.int32, device=DEVICE)
     d_g_t_lds = torch.tensor(g_T_lds, dtype=torch.int32, device=DEVICE)
 
-    max_m = M
-    total_tiles = group_size * ((M + 127) // 128) * ((N + 127) // 128)
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'cublas':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_perf_fn(group_A, group_B), quantiles=quantiles)
     if provider == 'triton':
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size,
-                                  max_m=max_m, total_tiles=total_tiles), quantiles=quantiles)
+            lambda: triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, group_size), quantiles=quantiles)
     if provider == 'triton-tma':
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_t_lds, group_size, dtype=torch.
                                        float16), quantiles=quantiles)
-    return ms, max_ms, min_ms
+    return ms, min_ms, max_ms
 
 
-def run_benchmark(
-    m_list: List[int],
-    n_list: List[int],
-    k_list: List[int],
-    warmup: int = 50,
-    repeat: int = 1000,
-) -> tuple:
-    """config/CLI로 받은 M,N,K로 벤치마크. (elapsed_ms, gflops) 반환."""
-    group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
-    padded_A, padded_B, padded_m, padded_n, padded_k = _pad_grouped_for_triton(
-        group_A, group_B, m_list, n_list, k_list
-    )
-    group_C = [torch.empty((mp, np), device=DEVICE, dtype=torch.float16)
-               for mp, np in zip(padded_m, padded_n)]
-    A_addrs = [a.data_ptr() for a in padded_A]
-    B_addrs = [b.data_ptr() for b in padded_B]
-    C_addrs = [c.data_ptr() for c in group_C]
-    g_sizes = []
-    g_lds = []
-    for i in range(len(m_list)):
-        Mp, Np, Kp = padded_m[i], padded_n[i], padded_k[i]
-        g_sizes += [Mp, Np, Kp]
-        g_lds += [padded_A[i].stride(0), padded_B[i].stride(0), group_C[i].stride(0)]
-    d_a_ptrs = torch.tensor(A_addrs, device=DEVICE)
-    d_b_ptrs = torch.tensor(B_addrs, device=DEVICE)
-    d_c_ptrs = torch.tensor(C_addrs, device=DEVICE)
-    d_g_sizes = torch.tensor(g_sizes, dtype=torch.int32, device=DEVICE)
-    d_g_lds = torch.tensor(g_lds, dtype=torch.int32, device=DEVICE)
-    max_m = max(padded_m)
-    total_tiles = sum(((m + 127) // 128) * ((n + 127) // 128) for m, n in zip(padded_m, padded_n))
-
-    for _ in range(warmup):
-        triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list),
-                       max_m=max_m, total_tiles=total_tiles)
-    torch.cuda.synchronize()
-
-    start_ev = torch.cuda.Event(enable_timing=True)
-    end_ev = torch.cuda.Event(enable_timing=True)
-    start_ev.record()
-    for _ in range(repeat):
-        triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list),
-                       max_m=max_m, total_tiles=total_tiles)
-    end_ev.record()
-    torch.cuda.synchronize()
-    elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
-    flops = sum(2 * m * n * k for m, n, k in zip(m_list, n_list, k_list))
-    gflops = flops * 1e-9 / (elapsed_ms / 1000)
-    return elapsed_ms, gflops
-
-
-if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "experiments" / "compare_grouped"))
-    try:
-        from script_utils import load_grouped_config_module, DEFAULT_CONFIG
-        _load, _add_args = load_grouped_config_module()
-    except ImportError:
-        _load = _add_args = None
-        DEFAULT_CONFIG = None
-
-    parser = argparse.ArgumentParser()
-    if _add_args:
-        _add_args(parser)
-    parser.add_argument("--warmup", type=int, default=50)
-    parser.add_argument("--repeat", type=int, default=1000)
-    parser.add_argument("--no-config", action="store_true")
-    parser.add_argument("--benchmark-only", action="store_true", help="config 모드로만 실행, perf_report 스킵")
-    args = parser.parse_args()
-
-    use_config = args.benchmark_only or args.config or args.m or args.n or args.k
-    if use_config and _load and DEFAULT_CONFIG:
-        m_list, n_list, k_list = _load(
-            config_path=None if args.no_config else (args.config or DEFAULT_CONFIG),
-            m=args.m, n=args.n, k=args.k,
-            default_config=DEFAULT_CONFIG,
-        )
-        # Validation: Triton output vs torch.matmul reference
-        group_A, group_B = make_grouped_matrices(m_list, n_list, k_list, dtype=torch.float16)
-        padded_A, padded_B, padded_m, padded_n, padded_k = _pad_grouped_for_triton(
-            group_A, group_B, m_list, n_list, k_list
-        )
-        group_C = [torch.empty((mp, np), device=DEVICE, dtype=torch.float16)
-                   for mp, np in zip(padded_m, padded_n)]
-        A_addrs = [a.data_ptr() for a in padded_A]
-        B_addrs = [b.data_ptr() for b in padded_B]
-        C_addrs = [c.data_ptr() for c in group_C]
-        g_sizes = []
-        g_lds = []
-        for i in range(len(m_list)):
-            Mp, Np, Kp = padded_m[i], padded_n[i], padded_k[i]
-            g_sizes += [Mp, Np, Kp]
-            g_lds += [padded_A[i].stride(0), padded_B[i].stride(0), group_C[i].stride(0)]
-        d_a_ptrs = torch.tensor(A_addrs, device=DEVICE)
-        d_b_ptrs = torch.tensor(B_addrs, device=DEVICE)
-        d_c_ptrs = torch.tensor(C_addrs, device=DEVICE)
-        d_g_sizes = torch.tensor(g_sizes, dtype=torch.int32, device=DEVICE)
-        d_g_lds = torch.tensor(g_lds, dtype=torch.int32, device=DEVICE)
-        max_m = max(padded_m)
-        total_tiles = sum(((m + 127) // 128) * ((n + 127) // 128) for m, n in zip(padded_m, padded_n))
-        triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list),
-                       max_m=max_m, total_tiles=total_tiles)
-        torch.cuda.synchronize()
-        ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
-        for i in range(len(m_list)):
-            m, n = m_list[i], n_list[i]
-            assert torch.allclose(
-                group_C[i][:m, :n].float(), ref_out[i].float(),
-                atol=1e-1, rtol=1e-1,
-            ), f"Triton validation failed at batch {i}"
-        print("Triton grouped GEMM validation passed.")
-
-        elapsed_ms, gflops = run_benchmark(m_list, n_list, k_list, args.warmup, args.repeat)
-        print(f"M,N,K: {m_list}, {n_list}, {k_list}")
-        print(f"Triton grouped GEMM: {elapsed_ms:.3f} ms, {gflops:.1f} GFLOPS")
-    else:
-        _validate_default_shapes()
-        benchmark_square_matrices.run(show_plots=True, print_data=True)
-        benchmark_batches.run(show_plots=True, print_data=True)
+benchmark_square_matrices.run(show_plots=True, print_data=True)
+benchmark_batches.run(show_plots=True, print_data=True)

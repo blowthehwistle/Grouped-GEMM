@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 """
-여러 config로 run_all.py를 순차 실행하고, config별로 결과를 저장합니다.
+여러 config로 benchmark_end_to_end.py를 순차 실행하고, config별로 결과를 저장합니다.
 
 Usage:
     python run_multi_config.py
@@ -102,7 +102,7 @@ def main():
 
         cmd = [
             sys.executable,
-            str(CONFIG_DIR / "run_all.py"),
+            str(CONFIG_DIR / "benchmark_end_to_end.py"),
             "--config",
             str(config_path),
             "--results-subdir",

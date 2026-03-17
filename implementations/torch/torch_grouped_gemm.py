@@ -1,6 +1,9 @@
 """
-PyTorch Grouped GEMM. torch.grouped_mm 또는 matmul loop.
-config/CLI로 M,N,K 주입 (run_all 통합 실험용).
+PyTorch Grouped GEMM. torch.grouped_mm or matmul loop(fallback)
+
+reference:
+https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grouped_mm.html
+
 """
 
 import argparse
@@ -78,15 +81,19 @@ def group_gemm_fn(
         and group_B[0].dtype == torch.bfloat16
     )
 
+    # check if all experts have the same K and N
     K0, N0 = group_A[0].shape[1], group_B[0].shape[1]
     for i in range(group_size):
         if group_A[i].shape[1] != K0 or group_B[i].shape[1] != N0:
             can_use_grouped_mm = False
             break
 
+
     if can_use_grouped_mm:
         mat_a = torch.cat(group_A, dim=0)
         mat_b = torch.stack([b.T for b in group_B], dim=0)
+
+        # offset calculation (A의 axis 0으로 누적 합)
         offs = torch.cumsum(
             torch.tensor([a.shape[0] for a in group_A], device=DEVICE, dtype=torch.int32),
             dim=0,

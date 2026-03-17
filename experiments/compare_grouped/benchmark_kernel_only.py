@@ -9,7 +9,7 @@ Grouped GEMM 단일-커널 백엔드만 비교 (공정한 비교용).
   - Triton: grouped_matmul_kernel (1 kernel)
   - Torch: grouped_mm (1 kernel) — 조건: BF16, 동일 K·N일 때만. 아니면 loop fallback
 
-run_all.py와 동일 config 사용. 결과는 results/benchmark/single_kernel/ 에 저장.
+benchmark_end_to_end.py와 동일 config 사용. 결과는 results/benchmark/single_kernel/ 에 저장.
 --nsight 시 .ncu-rep 생성.
 
 공정성: 커널 런치 오버헤드를 제거해, 순수 계산 성능만 비교 가능.
@@ -19,6 +19,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from datetime import datetime
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = REPO_ROOT / "experiments" / "compare_grouped"
@@ -101,7 +102,7 @@ def run_cuda_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_
     print(f"Config: {config_resolved}, shapes: {shapes[:4]}{'...' if len(shapes) > 4 else ''}", flush=True)
 
     out_dir = BENCHMARK_DIR / "cuda"
-    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
+    nsight_dir = (Path(nsight_out) / "cuda") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cuda_config = out_dir / "grouped_config.txt"
@@ -129,11 +130,16 @@ def run_cuda_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_
                 continue
             rep_path = nsight_dir / f"grouped_gemm_{suffix}"
             cmd = [str(exe_path), kernel_arg, "p", cfg_arg]
+            print(f"[Nsight] CUDA single-kernel {label} starting (this may take a while)...", flush=True)
             r = _wrap_ncu(cmd, rep_path, ncu_extra, timeout=600)
             out = (r.stdout or "") + (r.stderr or "")
             lines.append(f"--- Nsight ({label}) ---")
             lines.append(out.rstrip())
             lines.append("")
+            if r.returncode == 0:
+                print(f"[Nsight] CUDA single-kernel {label} done -> {rep_path}.ncu-rep", flush=True)
+            else:
+                print(f"[Nsight] CUDA single-kernel {label} FAILED (exit {r.returncode}) -> {rep_path}.ncu-rep", flush=True)
 
     # TF32 kernel 1 (cuBLAS Grouped)
     lines.append("--- Kernel 1 (cuBLAS Grouped API) ---")
@@ -169,7 +175,7 @@ def run_cutlass_single_kernel(config_path=None, nsight=False, nsight_out=None, n
 
     m_list, n_list, k_list = load_unified_config(config_path)
     out_dir = BENCHMARK_DIR / "cutlass"
-    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
+    nsight_dir = (Path(nsight_out) / "cutlass") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     config_file = out_dir / "grouped_config.txt"
@@ -202,7 +208,7 @@ def run_triton_single_kernel(config_path=None, nsight=False, nsight_out=None, nc
         return None
 
     out_dir = BENCHMARK_DIR / "triton"
-    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
+    nsight_dir = (Path(nsight_out) / "triton") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
     config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
     cmd = [sys.executable, str(script), "--benchmark-only", "--config", str(config),
@@ -242,7 +248,7 @@ def run_torch_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu
         print("        For single-kernel comparison, use uniform M,N,K or same K and N per batch.", flush=True)
 
     out_dir = BENCHMARK_DIR / "torch"
-    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
+    nsight_dir = (Path(nsight_out) / "torch") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
     config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
     cmd = [sys.executable, str(script), "--config", str(config), "--repeat", "1000", "--warmup", "50"]
@@ -365,7 +371,15 @@ def main():
     args = parser.parse_args()
 
     config_path = args.config or (CONFIG_DIR / "config.yaml" if (CONFIG_DIR / "config.yaml").exists() else None)
-    nsight_opts = dict(nsight=args.nsight, nsight_out=args.nsight_out, ncu_extra=args.ncu_extra)
+
+    # Nsight 결과 기본 위치: results/nsight/<timestamp>/ (백엔드별 서브폴더는 각 함수에서 생성)
+    if args.nsight and not args.nsight_out:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        default_nsight_out = REPO_ROOT / "results" / "nsight" / ts
+    else:
+        default_nsight_out = args.nsight_out
+
+    nsight_opts = dict(nsight=args.nsight, nsight_out=default_nsight_out, ncu_extra=args.ncu_extra)
 
     print("=== Single-Kernel Grouped GEMM Benchmark ===\n", flush=True)
 

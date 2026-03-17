@@ -10,6 +10,7 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
+from datetime import datetime
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = REPO_ROOT / "experiments" / "compare_grouped"
@@ -98,7 +99,8 @@ def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=
 
     benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
     out_dir = benchmark_base / "cuda"
-    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
+    # Nsight 결과: nsight_out이 지정되면 <nsight_out>/cuda/, 아니면 기존 위치 유지
+    nsight_dir = (Path(nsight_out) / "cuda") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
     if nsight:
         nsight_dir.mkdir(parents=True, exist_ok=True)
@@ -118,8 +120,9 @@ def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=
     cfg_arg = str(cuda_config.resolve())
     timeout = 600 if nsight else 300
 
-    # Nsight: kernel 3 (TF32 all), kernel 2 (FP16 all)
+    # Nsight: kernel 3 (TF32 all), kernel 2 (FP16 all), then FP16 kernel 0/1 separately (Loop vs Grouped)
     if nsight:
+        # TF32 all
         for label, exe_path, kernel_arg in [
             ("TF32", exe, "3"),
             ("FP16", exe_half if exe_half.exists() else None, "2"),
@@ -134,6 +137,29 @@ def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=
             lines.append(out.rstrip())
             lines.append("")
             print(f"[Nsight] {label} {'done' if r.returncode == 0 else f'FAILED ({r.returncode})'}", flush=True)
+            if r.returncode != 0:
+                combined = out.strip().split("\n")
+                for line in (combined[-25:] if len(combined) > 25 else combined):
+                    if line.strip():
+                        print(f"  | {line}", flush=True)
+                print(f"  | (full log: {out_file})", flush=True)
+        # FP16 kernel 0 (Loop) and 1 (Grouped) separately so each .ncu-rep has one kernel type
+        if nsight and exe_half.exists():
+            for k, name in [(0, "fp16_loop"), (1, "fp16_grouped")]:
+                rep_path = nsight_dir / f"grouped_gemm_{name}"
+                cmd = [str(exe_half), str(k), "p", cfg_arg]
+                r = _wrap_ncu(cmd, rep_path, ncu_extra, timeout=600)
+                out = (r.stdout or "") + (r.stderr or "")
+                lines.append(f"--- Nsight FP16 {name} ---")
+                lines.append(out.rstrip())
+                lines.append("")
+                print(f"[Nsight] FP16 {name} ({'Loop' if k == 0 else 'Grouped'}) {'done' if r.returncode == 0 else f'FAILED ({r.returncode})'}", flush=True)
+                if r.returncode != 0:
+                    combined = out.strip().split("\n")
+                    for line in (combined[-25:] if len(combined) > 25 else combined):
+                        if line.strip():
+                            print(f"  | {line}", flush=True)
+                    print(f"  | (full log: {out_file})", flush=True)
 
     # TF32 kernels 0,1,2 (벤치마크)
     for k in (0, 1, 2):
@@ -170,7 +196,7 @@ def run_triton_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extr
 
     benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
     out_dir = benchmark_base / "triton"
-    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
+    nsight_dir = (Path(nsight_out) / "triton") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
     config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
     cmd = [sys.executable, str(script), "--benchmark-only", "--config", str(config),
@@ -202,7 +228,7 @@ def run_torch_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra
 
     benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
     out_dir = benchmark_base / "torch"
-    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
+    nsight_dir = (Path(nsight_out) / "torch") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
     config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
     cmd = [sys.executable, str(script), "--config", str(config), "--repeat", "1000", "--warmup", "50"]
@@ -231,7 +257,7 @@ def run_cutlass_grouped(config_path=None, nsight=False, nsight_out=None, ncu_ext
     m_list, n_list, k_list = load_unified_config(config_path)
     benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
     out_dir = benchmark_base / "cutlass"
-    nsight_dir = Path(nsight_out) if nsight_out else out_dir / "nsight"
+    nsight_dir = (Path(nsight_out) / "cutlass") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     config_file = out_dir / "grouped_config.txt"
@@ -270,7 +296,15 @@ def main():
 
     config_path = args.config or (CONFIG_DIR / "config.yaml" if (CONFIG_DIR / "config.yaml").exists() else None)
     results_base = (REPO_ROOT / "results" / "benchmark" / args.results_subdir) if args.results_subdir else None
-    nsight_opts = dict(nsight=args.nsight, nsight_out=args.nsight_out, ncu_extra=args.ncu_extra)
+
+    # Nsight 결과 기본 위치: results/nsight/<timestamp>/ (백엔드별 서브폴더는 각 함수에서 생성)
+    if args.nsight and not args.nsight_out:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        default_nsight_out = REPO_ROOT / "results" / "nsight" / ts
+    else:
+        default_nsight_out = args.nsight_out
+
+    nsight_opts = dict(nsight=args.nsight, nsight_out=default_nsight_out, ncu_extra=args.ncu_extra)
     run_opts = dict(**nsight_opts, results_base=results_base)
 
     results = []

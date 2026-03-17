@@ -118,6 +118,7 @@ int main(int argc, char **argv) {
   std::vector<int64_t> lda_host(batch_size), ldb_host(batch_size),
       ldc_host(batch_size), ldd_host(batch_size);
 
+  // C, D : Bias addition 및 결과
   int64_t total_A = 0, total_B = 0, total_C = 0, total_D = 0;
   for (int i = 0; i < batch_size; i++) {
     offset_A[i] = total_A; 

@@ -1,4 +1,10 @@
-CUDA_PATH = /usr/local/cuda-12.5
+# cuda 13.0
+# torch 2.12.0
+# PyTorch Version: 2.12.0.dev20260315+cu128
+# CUDA Version: 12.8
+# cuDNN: 91900
+
+CUDA_PATH = /usr/local/cuda
 CC = $(CUDA_PATH)/bin/nvcc
 
 # CUTLASS path
@@ -10,7 +16,7 @@ CUTLASS_DIR = implementations/cutlass
 INCLUDE_DIR = ./include
 BIN_DIR = bin
 INCLUDES = -I$(INCLUDE_DIR)
-FLAGS = -lcublas -arch=sm_86 -Xcompiler -fopenmp $(INCLUDES)
+FLAGS = -lcublas -arch=sm_100 -Xcompiler -fopenmp $(INCLUDES)
 # grouped GEMM (nvtx 사용)
 FLAGS_NVTX = $(FLAGS) -lnvToolsExt
 

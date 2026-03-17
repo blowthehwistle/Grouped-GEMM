@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/hwi/research/Grouped-GEMM/implementations/torch/torch_grouped_gemm.py", line 161, in <module>
+    torch_out = group_gemm_fn(group_A, group_B)
+  File "/home/hwi/research/Grouped-GEMM/implementations/torch/torch_grouped_gemm.py", line 94, in group_gemm_fn
+    out = torch.nn.functional.grouped_mm(mat_a, mat_b, offs=offs)
+  File "/home/hwi/miniconda3/envs/groupedgemm/lib/python3.10/site-packages/torch/nn/functional.py", line 6742, in grouped_mm
+    return torch._grouped_mm(mat_a, mat_b, offs=offs, bias=bias, out_dtype=out_dtype)
+RuntimeError: contraction dimension of mat_a and mat_b must match

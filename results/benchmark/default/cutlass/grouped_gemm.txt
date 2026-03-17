@@ -1,0 +1,15 @@
+=== Cutlass Grouped GEMM Benchmark ===
+Batch size: 8
+Shapes: [(8192,2048,4096), (4096,2048,4096), (2048,2048,4096), (2048,2048,4096), (1024,2048,4096), (1024,2048,4096), (1024,2048,4096), (1024,2048,4096)]
+
+      B          M     N     K
+     0-0      8192  2048  4096
+     1-1      4096  2048  4096
+     2-3      2048  2048  4096
+     4-7      1024  2048  4096
+Result is correct
+
+--- Performance ---
+  Cutlass Grouped:      6.9034 ms/iter,  49772.2 GFLOPS
+Cutlass grouped GEMM: 6.9034 ms, 49772.2 GFLOPS
+  [raw] 0,0.0069034,0,49772.2

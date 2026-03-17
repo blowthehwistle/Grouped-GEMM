@@ -1,0 +1,70 @@
+=== CUDA Grouped GEMM Benchmark ===
+Batch size: 8
+Shapes: [(8192, 2048, 4096), (4096, 2048, 4096), (2048, 2048, 4096), (2048, 2048, 4096), (1024, 2048, 4096), (1024, 2048, 4096), (1024, 2048, 4096), (1024, 2048, 4096)]
+
+--- Kernel 0 (cuBLAS Loop) ---
+      B          M     N     K
+     0-0      8192  2048  4096
+     1-1      4096  2048  4096
+     2-3      2048  2048  4096
+     4-7      1024  2048  4096
+Result is correct
+
+--- Performance ---
+  Baseline (cuBLAS Loop):  14.2633 ms/iter,  24089.6 GFLOPS
+  Kernel (0/1/2):          14.2892 ms/iter,  24045.9 GFLOPS
+  [raw] 0.0142633,0.0142892,24089.6,24045.9
+
+--- Kernel 1 (cuBLAS Grouped API) ---
+      B          M     N     K
+     0-0      8192  2048  4096
+     1-1      4096  2048  4096
+     2-3      2048  2048  4096
+     4-7      1024  2048  4096
+Divergence! Should -2.695534, Is -2.694976 (Relative Diff 0.000207) at 25165852, (2, 0, 28)
+Result is different
+
+--- Performance ---
+  Baseline (cuBLAS Loop):  14.3098 ms/iter,  24011.3 GFLOPS
+  Kernel (0/1/2):          13.721 ms/iter,  25041.8 GFLOPS
+  [raw] 0.0143098,0.013721,24011.3,25041.8
+
+--- Kernel 2 (Custom Double Buffering) ---
+      B          M     N     K
+     0-0      8192  2048  4096
+     1-1      4096  2048  4096
+     2-3      2048  2048  4096
+     4-7      1024  2048  4096
+Divergence! Should -2.659596, Is -2.657816 (Relative Diff 0.000669) at 23, (0, 0, 23)
+Result is different
+
+--- Performance ---
+  Baseline (cuBLAS Loop):  14.3505 ms/iter,  23943.2 GFLOPS
+  Kernel (0/1/2):          29.5466 ms/iter,  11629 GFLOPS
+  [raw] 0.0143505,0.0295466,23943.2,11629
+
+--- CUDA FP16 Loop ---
+      B          M     N     K
+     0-0      8192  2048  4096
+     1-1      4096  2048  4096
+     2-3      2048  2048  4096
+     4-7      1024  2048  4096
+Result is correct
+
+--- Performance ---
+  Baseline (cuBLAS Loop FP16): 7.12567 ms/iter, 48219.7 GFLOPS
+  Kernel (0/1):                7.13611 ms/iter, 48149.1 GFLOPS
+  [raw] 0.00712567,0.00713611,48219.7,48149.1
+
+--- CUDA FP16 Grouped ---
+      B          M     N     K
+     0-0      8192  2048  4096
+     1-1      4096  2048  4096
+     2-3      2048  2048  4096
+     4-7      1024  2048  4096
+Result is correct
+
+--- Performance ---
+  Baseline (cuBLAS Loop FP16): 7.1279 ms/iter, 48204.6 GFLOPS
+  Kernel (0/1):                7.02834 ms/iter, 48887.4 GFLOPS
+  [raw] 0.0071279,0.00702834,48204.6,48887.4

@@ -89,13 +89,14 @@ def group_gemm_fn(
             break
 
 
+    # torch.nn.functional.grouped_mm expects mat_b shaped [group, K, N]
+    # (not transposed). Each group uses A_i [M_i, K] and B_i [K, N].
+
     if can_use_grouped_mm:
         mat_a = torch.cat(group_A, dim=0)
-        # torch.nn.functional.grouped_mm expects mat_b shaped [group, K, N]
-        # (not transposed). Each group uses A_i [M_i, K] and B_i [K, N].
         mat_b = torch.stack(group_B, dim=0)
 
-        # offset calculation (A의 axis 0으로 누적 합). grouped_mm requires offs to be int32.
+        # offset calculation (A의 axis 0으로 누적 합).
         offs = torch.cumsum(
             torch.tensor([a.shape[0] for a in group_A], device=DEVICE, dtype=torch.int32),
             dim=0,
@@ -128,9 +129,6 @@ def run_benchmark(
     """벤치마크 실행. (elapsed_ms, gflops) 반환. CUDA Event 기반 측정 (cuBLAS와 동일)."""
     group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
 
-    # NVTX: Nsight Compute에서 --nvtx --nvtx-include "grouped_gemm" 으로 GEMM 구간만 프로파일 가능.
-    if torch.cuda.is_available():
-        torch.cuda.nvtx.range_push("grouped_gemm")
     for _ in range(warmup):
         torch_perf_fn(group_A, group_B)
     if torch.cuda.is_available():
@@ -139,12 +137,15 @@ def run_benchmark(
     start_ev = torch.cuda.Event(enable_timing=True)
     end_ev = torch.cuda.Event(enable_timing=True)
     start_ev.record()
+    # NVTX: repeat 구간만 감싸서 프로파일 시 warmup이 아닌 실제 벤치 커널만 수집
+    if torch.cuda.is_available():
+        torch.cuda.nvtx.range_push("grouped_gemm")
     for _ in range(repeat):
         torch_perf_fn(group_A, group_B)
-    end_ev.record()
-    torch.cuda.synchronize()
     if torch.cuda.is_available():
         torch.cuda.nvtx.range_pop()
+    end_ev.record()
+    torch.cuda.synchronize()
     elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
 
     flops = sum(2 * m * n * k for m, n, k in zip(m_list, n_list, k_list))

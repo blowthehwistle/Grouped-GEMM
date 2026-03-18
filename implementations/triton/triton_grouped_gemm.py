@@ -673,10 +673,6 @@ def run_benchmark(
     max_m = max(padded_m)
     total_tiles = sum(((m + 127) // 128) * ((n + 127) // 128) for m, n in zip(padded_m, padded_n))
 
-    # NVTX range: Nsight Compute에서 --nvtx --nvtx-include "grouped_gemm" 으로
-    # 이 구간만 프로파일하면 초기화 커널 없이 실제 GEMM 커널만 수집 가능.
-    if torch.cuda.is_available():
-        torch.cuda.nvtx.range_push("grouped_gemm")
     for _ in range(warmup):
         triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list),
                        max_m=max_m, total_tiles=total_tiles)
@@ -685,13 +681,16 @@ def run_benchmark(
     start_ev = torch.cuda.Event(enable_timing=True)
     end_ev = torch.cuda.Event(enable_timing=True)
     start_ev.record()
+    # NVTX: repeat 구간만 감싸서 프로파일 시 warmup이 아닌 실제 벤치 커널만 수집
+    if torch.cuda.is_available():
+        torch.cuda.nvtx.range_push("grouped_gemm")
     for _ in range(repeat):
         triton_perf_fn(d_a_ptrs, d_b_ptrs, d_c_ptrs, d_g_sizes, d_g_lds, len(m_list),
                        max_m=max_m, total_tiles=total_tiles)
-    end_ev.record()
-    torch.cuda.synchronize()
     if torch.cuda.is_available():
         torch.cuda.nvtx.range_pop()
+    end_ev.record()
+    torch.cuda.synchronize()
     elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
     flops = sum(2 * m * n * k for m, n, k in zip(m_list, n_list, k_list))
     gflops = flops * 1e-9 / (elapsed_ms / 1000)

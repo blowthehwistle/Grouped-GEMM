@@ -276,8 +276,9 @@ def run_torch_single_kernel(config_path=None, results_base=None, nsight_opts=Non
     same_k = len(set(k_list)) == 1
     same_n = len(set(n_list)) == 1
     if not (same_k and same_n):
-        print("[Torch] Config has varying K/N -> grouped_mm unavailable, uses loop (multiple kernels).", flush=True)
+        print("[Torch] Config has varying K/N -> grouped_mm unavailable (loop fallback). Skipping Torch.", flush=True)
         print("        For single-kernel comparison, use uniform M,N,K or same K and N per batch.", flush=True)
+        return None
 
     benchmark_base = results_base or BENCHMARK_DIR
     out_dir = benchmark_base / "torch"
@@ -296,8 +297,7 @@ def run_torch_single_kernel(config_path=None, results_base=None, nsight_opts=Non
         else:
             with open(out_dir / "grouped_gemm.txt", "w") as f:
                 subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
-            label = "1 kernel (grouped_mm)" if (same_k and same_n) else "loop (fallback)"
-            print(f"[Torch] done ({label})", flush=True)
+            print("[Torch] done (1 kernel, grouped_mm)", flush=True)
         return out_dir / "grouped_gemm.txt"
     except Exception as e:
         print(f"Torch failed: {e}")

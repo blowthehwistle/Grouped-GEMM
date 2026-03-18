@@ -230,6 +230,14 @@ def run_torch_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra
         print("Warning: torch_grouped_gemm.py not found.")
         return None
 
+    m_list, n_list, k_list = load_unified_config(config_path)
+    same_k = len(set(k_list)) == 1
+    same_n = len(set(n_list)) == 1
+    if not (same_k and same_n):
+        print("[Torch] Config has varying K/N -> grouped_mm unavailable (loop fallback). Skipping Torch.", flush=True)
+        print("        For single-kernel comparison, use uniform M,N,K or same K and N per batch.", flush=True)
+        return None
+
     benchmark_base = results_base or (REPO_ROOT / "results" / "benchmark")
     out_dir = benchmark_base / "torch"
     nsight_dir = (Path(nsight_out) / "torch") if nsight_out else out_dir / "nsight"

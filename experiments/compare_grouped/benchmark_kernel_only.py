@@ -24,18 +24,27 @@ from datetime import datetime
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = REPO_ROOT / "experiments" / "compare_grouped"
 BENCHMARK_DIR = REPO_ROOT / "results" / "benchmark" / "single_kernel"
+CONFIGS_DIR = CONFIG_DIR / "configs"
+# 기본 설정: configs/default.yaml (없으면 default.yml)
+_DEFAULT_YAML = CONFIGS_DIR / "default.yaml"
+_DEFAULT_YML = CONFIGS_DIR / "default.yml"
+DEFAULT_CONFIG = _DEFAULT_YAML if _DEFAULT_YAML.exists() else _DEFAULT_YML
 
 DEFAULT_SHAPES = ([1024] * 8, [4096] * 8, [14336] * 8)
 
+# NVTX 구간 이름: Triton/Torch 벤치마크 루프에 range_push/pop으로 감싸져 있음.
+# Nsight CLI: Push/Pop 구간은 이름 뒤에 '/'를 붙여야 함 (그렇지 않으면 Start/End로 해석되어 커널이 0개 수집됨).
+NSIGHT_NVTX_RANGE = "grouped_gemm/"
+
 
 def load_unified_config(config_path):
-    """config 로드 → (m_list, n_list, k_list)"""
+    """config 로드 → (m_list, n_list, k_list). config_path None이면 DEFAULT_CONFIG 사용."""
     sys.path.insert(0, str(CONFIG_DIR))
     try:
         from grouped_config import load_grouped_sizes
         return load_grouped_sizes(
             config_path=config_path,
-            default_config=CONFIG_DIR / "config.yaml",
+            default_config=DEFAULT_CONFIG,
         )
     finally:
         if str(CONFIG_DIR) in sys.path:
@@ -48,32 +57,44 @@ def _run_cmd(cmd, capture=True, timeout=300):
     return (r.stdout or "") + (r.stderr or ""), r.returncode
 
 
-def _wrap_ncu(cmd, rep_path, ncu_extra=None, timeout=600):
+def _run_ncu(cmd, rep_path, opts, nvtx_include=None, timeout=600):
     """
-    -o는 모호하므로 --export를 사용합니다. 
-    이미 파일이 있을 경우 덮어쓰려면 --force-overwrite(-f)를 추가하는 것이 안전합니다.
+    ncu 실행. opts: nsight_opts (out, extra, launch_count, launch_skip).
+    nvtx_include: 이 NVTX 구간 안에서 런치된 커널만 수집 (Triton/Torch용, 초기화 제외).
     """
-    # -o 대신 --export 사용 (또는 --output-file)
-    ncu_cmd = ["ncu", "--export", str(rep_path), "--force-overwrite", "--launch-count", "5"]
-    
-    if ncu_extra:
-        ncu_cmd.extend(ncu_extra.split())
+    rep_path = Path(rep_path).resolve()
+    export_path = rep_path if str(rep_path).endswith(".ncu-rep") else Path(str(rep_path) + ".ncu-rep")
+    ncu_cmd = [
+        "ncu", "--export", str(export_path), "--force-overwrite",
+        "--launch-count", str(opts.get("launch_count", 5)),
+    ]
+    if opts.get("launch_skip", 0) > 0:
+        ncu_cmd.extend(["--launch-skip-before-match", str(opts["launch_skip"])])
+    if nvtx_include:
+        ncu_cmd.extend(["--nvtx", "--nvtx-push-pop-scope", "process", "--nvtx-include", nvtx_include])
+    if opts.get("extra"):
+        ncu_cmd.extend(opts["extra"].split())
     ncu_cmd.extend(["--"] + cmd)
-    
     return subprocess.run(ncu_cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
 
 
-def _run_backend_with_nsight(cmd, out_file, rep_path, label, ncu_extra=None):
-    """cmd를 ncu로 프로파일 후 결과를 out_file에 저장."""
-    print(f"[Nsight] Profiling {label} -> {rep_path}.ncu-rep", flush=True)
-    r = _wrap_ncu(cmd, rep_path, ncu_extra, timeout=600)
+def _run_backend_with_nsight(cmd, out_file, rep_path, label, opts, nvtx_include=None):
+    """cmd를 ncu로 프로파일. nvtx_include 시 해당 NVTX 구간만 수집 (GEMM만)."""
+    rep_path = Path(rep_path).resolve()
+    expected_rep = rep_path if str(rep_path).endswith(".ncu-rep") else Path(str(rep_path) + ".ncu-rep")
+    print(f"[Nsight] Profiling {label} -> {expected_rep}", flush=True)
+    r = _run_ncu(cmd, rep_path, opts, nvtx_include=nvtx_include, timeout=600)
     out = (r.stdout or "") + (r.stderr or "")
     out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "w") as f:
         f.write(out)
     ok = r.returncode == 0
     if ok:
-        print(f"[Nsight] {label} done", flush=True)
+        if expected_rep.exists():
+            print(f"[Nsight] {label} done -> {expected_rep}", flush=True)
+        else:
+            print(f"[Nsight] {label} ncu exited 0 but file missing: {expected_rep}", flush=True)
+            print(f"          Check ncu output in {out_file}", flush=True)
     else:
         print(f"[Nsight] {label} FAILED (exit {r.returncode})", flush=True)
         # 에러 원인: ncu는 stdout/stderr 모두에 출력할 수 있음
@@ -88,7 +109,7 @@ def _run_backend_with_nsight(cmd, out_file, rep_path, label, ncu_extra=None):
     return ok
 
 
-def run_cuda_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
+def run_cuda_single_kernel(config_path=None, results_base=None, nsight_opts=None):
     """CUDA: kernel 1 (cuBLAS Grouped), kernel 2 (Custom) — TF32, FP16."""
     exe = REPO_ROOT / "bin" / "tmain_grouped"
     exe_half = REPO_ROOT / "bin" / "tmain_grouped_half"
@@ -96,13 +117,14 @@ def run_cuda_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_
         print("Warning: tmain_grouped not found. Run 'make grouped' first.")
         return None
 
-    config_resolved = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    config_resolved = (Path(config_path) if config_path else DEFAULT_CONFIG).resolve()
     m_list, n_list, k_list = load_unified_config(config_path)
     shapes = list(zip(m_list, n_list, k_list))
     print(f"Config: {config_resolved}, shapes: {shapes[:4]}{'...' if len(shapes) > 4 else ''}", flush=True)
 
-    out_dir = BENCHMARK_DIR / "cuda"
-    nsight_dir = (Path(nsight_out) / "cuda") if nsight_out else out_dir / "nsight"
+    benchmark_base = results_base or BENCHMARK_DIR
+    out_dir = benchmark_base / "cuda"
+    nsight_dir = Path(nsight_opts["out"]) if nsight_opts and nsight_opts.get("enabled") else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cuda_config = out_dir / "grouped_config.txt"
@@ -118,28 +140,34 @@ def run_cuda_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_
         "",
     ]
 
-    if nsight:
+    if nsight_opts and nsight_opts.get("enabled"):
         nsight_dir.mkdir(parents=True, exist_ok=True)
-        # Nsight profiling: kernel 1 (Grouped), kernel 2 (Custom) each → .ncu-rep
+        # C++ 바이너리는 NVTX가 ncu에 매칭되지 않아 No kernels were profiled 나옴 → NVTX 미사용
+        nvtx_cuda = None
         for label, exe_path, kernel_arg, suffix in [
-            ("TF32 Grouped", exe, "1", "tf32_grouped"),
-            ("TF32 Custom", exe, "2", "tf32_custom"),
-            ("FP16 Grouped", exe_half if exe_half.exists() else None, "1", "fp16_grouped"),
+                ("TF32 Grouped", exe, "1", "tf32_grouped"),
+                ("TF32 Custom", exe, "2", "tf32_custom"),
+                ("FP16 Grouped", exe_half if exe_half.exists() else None, "1", "fp16_grouped"),
         ]:
             if exe_path is None:
                 continue
             rep_path = nsight_dir / f"grouped_gemm_{suffix}"
+            expected_rep = Path(str(rep_path) + ".ncu-rep")
             cmd = [str(exe_path), kernel_arg, "p", cfg_arg]
             print(f"[Nsight] CUDA single-kernel {label} starting (this may take a while)...", flush=True)
-            r = _wrap_ncu(cmd, rep_path, ncu_extra, timeout=600)
+            r = _run_ncu(cmd, rep_path, nsight_opts, nvtx_include=nvtx_cuda, timeout=600)
             out = (r.stdout or "") + (r.stderr or "")
             lines.append(f"--- Nsight ({label}) ---")
             lines.append(out.rstrip())
             lines.append("")
             if r.returncode == 0:
-                print(f"[Nsight] CUDA single-kernel {label} done -> {rep_path}.ncu-rep", flush=True)
+                if expected_rep.exists():
+                    print(f"[Nsight] CUDA single-kernel {label} done -> {expected_rep}", flush=True)
+                else:
+                    print(f"[Nsight] CUDA single-kernel {label} ncu exited 0 but file missing: {expected_rep}", flush=True)
+                    print(f"          Check ncu output in {out_dir / 'grouped_gemm.txt'}", flush=True)
             else:
-                print(f"[Nsight] CUDA single-kernel {label} FAILED (exit {r.returncode}) -> {rep_path}.ncu-rep", flush=True)
+                print(f"[Nsight] CUDA single-kernel {label} FAILED (exit {r.returncode}) -> {expected_rep}", flush=True)
 
     # TF32 kernel 1 (cuBLAS Grouped)
     lines.append("--- Kernel 1 (cuBLAS Grouped API) ---")
@@ -166,7 +194,7 @@ def run_cuda_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_
     return out_file
 
 
-def run_cutlass_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
+def run_cutlass_single_kernel(config_path=None, results_base=None, nsight_opts=None):
     """Cutlass: 1 kernel (GemmGrouped)."""
     exe = REPO_ROOT / "bin" / "tmain_cutlass_grouped"
     if not exe.exists():
@@ -174,8 +202,9 @@ def run_cutlass_single_kernel(config_path=None, nsight=False, nsight_out=None, n
         return None
 
     m_list, n_list, k_list = load_unified_config(config_path)
-    out_dir = BENCHMARK_DIR / "cutlass"
-    nsight_dir = (Path(nsight_out) / "cutlass") if nsight_out else out_dir / "nsight"
+    benchmark_base = results_base or BENCHMARK_DIR
+    out_dir = benchmark_base / "cutlass"
+    nsight_dir = Path(nsight_opts["out"]) if nsight_opts and nsight_opts.get("enabled") else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     config_file = out_dir / "grouped_config.txt"
@@ -185,11 +214,12 @@ def run_cutlass_single_kernel(config_path=None, nsight=False, nsight_out=None, n
 
     cmd = [str(exe), str(config_file.resolve()), "p"]
     try:
-        if nsight:
+        if nsight_opts and nsight_opts.get("enabled"):
             nsight_dir.mkdir(parents=True, exist_ok=True)
+            # C++ 바이너리에서 NVTX가 ncu에 인식되지 않아 No kernels were profiled → NVTX 미사용, 처음 N개 커널 수집
             _run_backend_with_nsight(
                 cmd, out_dir / "grouped_gemm.txt",
-                nsight_dir / "cutlass_grouped_single", "Cutlass", ncu_extra)
+                nsight_dir / "cutlass_grouped_single", "Cutlass", nsight_opts, nvtx_include=None)
         else:
             with open(out_dir / "grouped_gemm.txt", "w") as f:
                 subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
@@ -200,26 +230,28 @@ def run_cutlass_single_kernel(config_path=None, nsight=False, nsight_out=None, n
         return None
 
 
-def run_triton_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
+def run_triton_single_kernel(config_path=None, results_base=None, nsight_opts=None):
     """Triton: 1 kernel (grouped_matmul_kernel)."""
     script = REPO_ROOT / "implementations" / "triton" / "triton_grouped_gemm.py"
     if not script.exists():
         print("Warning: triton_grouped_gemm.py not found.")
         return None
 
-    out_dir = BENCHMARK_DIR / "triton"
-    nsight_dir = (Path(nsight_out) / "triton") if nsight_out else out_dir / "nsight"
+    benchmark_base = results_base or BENCHMARK_DIR
+    out_dir = benchmark_base / "triton"
+    nsight_dir = Path(nsight_opts["out"]) if nsight_opts and nsight_opts.get("enabled") else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
-    config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    config = (Path(config_path) if config_path else DEFAULT_CONFIG).resolve()
     cmd = [sys.executable, str(script), "--benchmark-only", "--config", str(config),
            "--repeat", "1000", "--warmup", "50"]
 
     try:
-        if nsight:
+        if nsight_opts and nsight_opts.get("enabled"):
             nsight_dir.mkdir(parents=True, exist_ok=True)
+            nvtx = None if not nsight_opts.get("kernel_filter", True) else NSIGHT_NVTX_RANGE
             _run_backend_with_nsight(
                 cmd, out_dir / "grouped_gemm.txt",
-                nsight_dir / "triton_grouped_single", "Triton", ncu_extra)
+                nsight_dir / "triton_grouped_single", "Triton", nsight_opts, nvtx_include=nvtx)
         else:
             with open(out_dir / "grouped_gemm.txt", "w") as f:
                 subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
@@ -233,7 +265,7 @@ def run_triton_single_kernel(config_path=None, nsight=False, nsight_out=None, nc
         return None
 
 
-def run_torch_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu_extra=None):
+def run_torch_single_kernel(config_path=None, results_base=None, nsight_opts=None):
     """Torch: grouped_mm (1 kernel) — 조건: BF16, 동일 K·N. 아니면 loop fallback."""
     script = REPO_ROOT / "implementations" / "torch" / "torch_grouped_gemm.py"
     if not script.exists():
@@ -247,18 +279,20 @@ def run_torch_single_kernel(config_path=None, nsight=False, nsight_out=None, ncu
         print("[Torch] Config has varying K/N -> grouped_mm unavailable, uses loop (multiple kernels).", flush=True)
         print("        For single-kernel comparison, use uniform M,N,K or same K and N per batch.", flush=True)
 
-    out_dir = BENCHMARK_DIR / "torch"
-    nsight_dir = (Path(nsight_out) / "torch") if nsight_out else out_dir / "nsight"
+    benchmark_base = results_base or BENCHMARK_DIR
+    out_dir = benchmark_base / "torch"
+    nsight_dir = Path(nsight_opts["out"]) if nsight_opts and nsight_opts.get("enabled") else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
-    config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    config = (Path(config_path) if config_path else DEFAULT_CONFIG).resolve()
     cmd = [sys.executable, str(script), "--config", str(config), "--repeat", "1000", "--warmup", "50"]
 
     try:
-        if nsight:
+        if nsight_opts and nsight_opts.get("enabled"):
             nsight_dir.mkdir(parents=True, exist_ok=True)
+            nvtx = None if not nsight_opts.get("kernel_filter", True) else NSIGHT_NVTX_RANGE
             _run_backend_with_nsight(
                 cmd, out_dir / "grouped_gemm.txt",
-                nsight_dir / "torch_grouped_single", "Torch", ncu_extra)
+                nsight_dir / "torch_grouped_single", "Torch", nsight_opts, nvtx_include=nvtx)
         else:
             with open(out_dir / "grouped_gemm.txt", "w") as f:
                 subprocess.run(cmd, cwd=REPO_ROOT, stdout=f, stderr=subprocess.STDOUT, timeout=300)
@@ -287,29 +321,27 @@ def format_unified_report(config_str, rows):
     return "\n".join(lines)
 
 
-def load_and_parse_single_kernel():
-    """single_kernel 디렉터리에서 결과 파싱. compare.py와 동일 로직."""
+def _check_validation(text):
+    if "Result is correct" in text or "validation passed" in text:
+        return True
+    if "Result is different" in text:
+        return False
+    return None
+
+
+def parse_one_result_file(backend, path):
+    """한 개 결과 파일 파싱 → (config_str 또는 None, [(name, ms, gflops, val), ...])."""
     import re
+    if path is None or not Path(path).exists():
+        return None, []
+    content = Path(path).read_text()
     config_str = None
     rows = []
+    m = re.search(r"Batch size: (\d+)\nShapes: (.+)", content)
+    if m:
+        config_str = f"Batch size: {m.group(1)}, Shapes: {m.group(2).strip()}"
 
-    def _check_validation(text):
-        if "Result is correct" in text or "validation passed" in text:
-            return True
-        if "Result is different" in text:
-            return False
-        return None
-
-    dir_path = BENCHMARK_DIR
-
-    # CUDA: kernel 1 (TF32), FP16 grouped
-    cuda_path = dir_path / "cuda" / "grouped_gemm.txt"
-    if cuda_path.exists():
-        content = cuda_path.read_text()
-        if "Batch size:" in content:
-            m = re.search(r"Batch size: (\d+)\nShapes: (.+)", content)
-            if m:
-                config_str = f"Batch size: {m.group(1)}, Shapes: {m.group(2).strip()}"
+    if backend == "cuda":
         for name, pat in [
             ("CUDA cuBLAS Grouped (TF32)", r"--- Kernel 1 \(cuBLAS Grouped API\) ---(.*?)\[raw\]\s+[\d.]+,([\d.]+),[\d.]+,([\d.]+)"),
             ("CUDA Custom (TF32)", r"--- Kernel 2 \(Custom Double Buffering\) ---(.*?)\[raw\]\s+[\d.]+,([\d.]+),[\d.]+,([\d.]+)"),
@@ -322,11 +354,7 @@ def load_and_parse_single_kernel():
                 ms = t * 1000
                 val = _check_validation(m.group(1))
                 rows.append((name, ms, gflops, val))
-
-    # Cutlass
-    cut_path = dir_path / "cutlass" / "grouped_gemm.txt"
-    if cut_path.exists():
-        content = cut_path.read_text()
+    elif backend == "cutlass":
         val = _check_validation(content)
         m = re.search(r"Cutlass grouped GEMM:\s*([\d.]+)\s*ms,\s*([\d.]+)\s*GFLOPS", content)
         if m:
@@ -335,25 +363,16 @@ def load_and_parse_single_kernel():
             m = re.search(r"\[raw\]\s+[\d.]+,([\d.]+),[\d.]+,([\d.]+)", content)
             if m:
                 rows.append(("Cutlass", float(m.group(1)) * 1000, float(m.group(2)), val))
-
-    # Triton
-    tri_path = dir_path / "triton" / "grouped_gemm.txt"
-    if tri_path.exists():
-        content = tri_path.read_text()
+    elif backend == "triton":
         m = re.search(r"Triton grouped GEMM:\s*([\d.]+)\s*ms,\s*([\d.]+)\s*GFLOPS", content)
         if m:
             val = _check_validation(content)
             rows.append(("Triton", float(m.group(1)), float(m.group(2)), val))
-
-    # Torch
-    torch_path = dir_path / "torch" / "grouped_gemm.txt"
-    if torch_path.exists():
-        content = torch_path.read_text()
+    elif backend == "torch":
         m = re.search(r"Torch grouped GEMM:\s*([\d.]+)\s*ms,\s*([\d.]+)\s*GFLOPS", content)
         if m:
             val = _check_validation(content)
             rows.append(("Torch", float(m.group(1)), float(m.group(2)), val))
-
     return config_str, rows
 
 
@@ -361,50 +380,115 @@ def main():
     parser = argparse.ArgumentParser(
         description="Grouped GEMM single-kernel comparison (fair benchmark)")
     parser.add_argument("--config", type=Path, default=None, help="Config YAML path")
+    parser.add_argument(
+        "--config-name",
+        type=str,
+        default=None,
+        help="Config name under experiments/compare_grouped/configs (e.g., 'default', 'expert_even')",
+    )
+    parser.add_argument("--results-subdir", type=str, default=None,
+                        help="Save results to results/benchmark/single_kernel/<subdir>/ instead of results/benchmark/single_kernel/")
     parser.add_argument("--backend", choices=["cuda", "triton", "torch", "cutlass", "all"],
-                        default="all", help="Backend to run")
+                        action="append", default=None,
+                        help="Backend(s) to run; repeat for multiple (e.g. --backend triton --backend torch). Default: all")
     parser.add_argument("--no-compare", action="store_true", help="Skip unified report")
-    parser.add_argument("--nsight", action="store_true",
-                        help="Profile with Nsight Compute (.ncu-rep)")
-    parser.add_argument("--nsight-out", type=Path, default=None, help="Dir for .ncu-rep files")
-    parser.add_argument("--ncu-extra", type=str, default=None, help="Extra ncu options")
+    # Nsight Compute (한 그룹으로 정리)
+    g = parser.add_argument_group("Nsight Compute")
+    g.add_argument("--nsight", action="store_true", help="Profile with Nsight (.ncu-rep)")
+    g.add_argument("--nsight-out", type=Path, default=None, help="Output dir for .ncu-rep (default: results/nsight/<timestamp>)")
+    g.add_argument("--nsight-all-kernels", action="store_true",
+                   help="Triton/Torch: do not use NVTX range (collect all kernels; default: NVTX 'grouped_gemm' only)")
+    g.add_argument("--nsight-launch-count", "--ncu-launch-count", type=int, default=20, dest="nsight_launch_count",
+                    help="Number of kernel launches to profile (default: 20). Use 1 for single kernel. "
+                         "If --nsight-all-kernels is set and this is too small, it may capture only init kernels.")
+    g.add_argument("--nsight-launch-skip", "--ncu-launch-skip", type=int, default=0, dest="nsight_launch_skip",
+                    help="Skip this many kernel launches before profiling (e.g. 20 to skip init)")
+    g.add_argument("--nsight-extra", "--ncu-extra", type=str, default=None, dest="nsight_extra",
+                    help="Extra ncu options (e.g. '-c 1')")
     args = parser.parse_args()
 
-    config_path = args.config or (CONFIG_DIR / "config.yaml" if (CONFIG_DIR / "config.yaml").exists() else None)
-
-    # Nsight 결과 기본 위치: results/nsight/<timestamp>/ (백엔드별 서브폴더는 각 함수에서 생성)
-    if args.nsight and not args.nsight_out:
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        default_nsight_out = REPO_ROOT / "results" / "nsight" / ts
+    # Resolve config path: --config | --config-name | default = configs/default.yaml
+    config_path = None
+    if args.config:
+        config_path = args.config
+    elif args.config_name:
+        cand_yaml = CONFIGS_DIR / f"{args.config_name}.yaml"
+        cand_yml = CONFIGS_DIR / f"{args.config_name}.yml"
+        if cand_yaml.exists():
+            config_path = cand_yaml
+        elif cand_yml.exists():
+            config_path = cand_yml
+        else:
+            name_path = CONFIGS_DIR / args.config_name
+            if name_path.exists() and name_path.suffix in {".yaml", ".yml"}:
+                config_path = name_path
+            else:
+                available = sorted(p.stem for p in CONFIGS_DIR.glob("*.y*ml"))
+                print(f"[Config] '{args.config_name}' not found under {CONFIGS_DIR}.", flush=True)
+                if available:
+                    print(f"[Config] Available: {', '.join(available)}", flush=True)
+                return 1
     else:
-        default_nsight_out = args.nsight_out
+        config_path = DEFAULT_CONFIG
 
-    nsight_opts = dict(nsight=args.nsight, nsight_out=default_nsight_out, ncu_extra=args.ncu_extra)
+    results_base = (BENCHMARK_DIR / args.results_subdir) if args.results_subdir else None
+
+    nsight_out = args.nsight_out
+    if args.nsight and not nsight_out:
+        nsight_out = REPO_ROOT / "results" / "nsight" / datetime.now().strftime("%Y%m%d-%H%M%S")
+    # --nsight-all-kernels 시 초기화 커널만 잡히지 않도록 수집 런치 수를 늘림 (GEMM까지 포함)
+    launch_count = args.nsight_launch_count
+    if args.nsight and args.nsight_all_kernels and launch_count <= 20:
+        launch_count = 50
+    nsight_opts = {
+        "enabled": args.nsight,
+        "out": nsight_out,
+        "extra": args.nsight_extra,
+        "launch_count": launch_count,
+        "launch_skip": args.nsight_launch_skip,
+        "kernel_filter": not args.nsight_all_kernels,
+    } if args.nsight else None
+
+    run_opts = {"results_base": results_base, "nsight_opts": nsight_opts}
+
+    # --backend 여러 개 지원 (--backend triton --backend torch → 둘 다 실행)
+    backends = args.backend if args.backend else ["all"]
+    if "all" in backends:
+        backends = ["cuda", "cutlass", "triton", "torch"]
 
     print("=== Single-Kernel Grouped GEMM Benchmark ===\n", flush=True)
 
     results = []
-    if args.backend in ("cuda", "all"):
-        results.append(("cuda", run_cuda_single_kernel(config_path, **nsight_opts)))
-    if args.backend in ("cutlass", "all"):
-        results.append(("cutlass", run_cutlass_single_kernel(config_path, **nsight_opts)))
-    if args.backend in ("triton", "all"):
-        results.append(("triton", run_triton_single_kernel(config_path, **nsight_opts)))
-    if args.backend in ("torch", "all"):
-        results.append(("torch", run_torch_single_kernel(config_path, **nsight_opts)))
+    if "cuda" in backends:
+        results.append(("cuda", run_cuda_single_kernel(config_path, **run_opts)))
+    if "cutlass" in backends:
+        results.append(("cutlass", run_cutlass_single_kernel(config_path, **run_opts)))
+    if "triton" in backends:
+        results.append(("triton", run_triton_single_kernel(config_path, **run_opts)))
+    if "torch" in backends:
+        results.append(("torch", run_torch_single_kernel(config_path, **run_opts)))
 
     success = sum(1 for _, r in results if r is not None)
+    benchmark_dir = results_base if results_base is not None else BENCHMARK_DIR
     print(f"\nCompleted: {success}/{len(results)} backends")
-    print(f"Results: {BENCHMARK_DIR}", flush=True)
+    print(f"Results: {benchmark_dir}", flush=True)
 
     if not args.no_compare and success > 0:
-        config_str, rows = load_and_parse_single_kernel()
+        config_str = None
+        rows = []
+        for backend, out_file in results:
+            if out_file is None:
+                continue
+            c, r = parse_one_result_file(backend, out_file)
+            if c and config_str is None:
+                config_str = c
+            rows.extend(r)
         if rows:
             print("\n" + format_unified_report(config_str, rows))
             sys.path.insert(0, str(CONFIG_DIR))
             try:
                 from compare import write_results_csv
-                csv_path = BENCHMARK_DIR / "results.csv"
+                csv_path = benchmark_dir / "results.csv"
                 write_results_csv(rows, csv_path)
                 print(f"CSV written to {csv_path}")
             except ImportError:
@@ -412,6 +496,16 @@ def main():
             finally:
                 if str(CONFIG_DIR) in sys.path:
                     sys.path.remove(str(CONFIG_DIR))
+
+    if args.nsight and success > 0 and nsight_opts and nsight_opts.get("out"):
+        nsight_out = Path(nsight_opts["out"]).resolve()
+        reps = sorted(nsight_out.glob("*.ncu-rep"))
+        if reps:
+            print(f"Nsight reports: {nsight_out}", flush=True)
+            for f in reps:
+                print(f"  {f.name}", flush=True)
+        else:
+            print(f"Nsight output dir (no .ncu-rep found): {nsight_out}", flush=True)
 
     return 0 if success > 0 else 1
 

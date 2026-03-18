@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Optional, Tuple, Callable, Any
 
 CONFIG_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG = CONFIG_DIR / "config.yaml"
+CONFIGS_DIR = CONFIG_DIR / "configs"
+_DEFAULT_YAML = CONFIGS_DIR / "default.yaml"
+_DEFAULT_YML = CONFIGS_DIR / "default.yml"
+DEFAULT_CONFIG = _DEFAULT_YAML if _DEFAULT_YAML.exists() else _DEFAULT_YML
 
 
 def load_grouped_config_module() -> Tuple[Optional[Callable], Optional[Callable]]:

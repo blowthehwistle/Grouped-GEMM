@@ -44,7 +44,7 @@ all: $(TARGET_FP32) $(TARGET) $(TARGET_GEMM_BATCHED) $(TARGET_GEMM_GROUPED) $(TA
 cutlass_grouped: $(TARGET_CUTLASS_GROUPED)
 
 $(TARGET_CUTLASS_GROUPED): $(SRC_CUTLASS_GROUPED) $(INCLUDE_DIR)/helpers.h | $(BIN_DIR)
-	$(CC) -std=c++17 --expt-relaxed-constexpr $(SRC_CUTLASS_GROUPED) -o $@ -I$(CUTLASS_ROOT)/include -I$(CUTLASS_ROOT)/tools/util/include -I$(INCLUDE_DIR) -arch=sm_80 -lcublas
+	$(CC) -std=c++17 --expt-relaxed-constexpr $(SRC_CUTLASS_GROUPED) -o $@ -I$(CUTLASS_ROOT)/include -I$(CUTLASS_ROOT)/tools/util/include -I$(INCLUDE_DIR) -arch=sm_80 -lcublas -lnvToolsExt
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

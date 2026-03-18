@@ -1,4 +1,4 @@
-"""Grouped GEMM M,N,K 설정 로더. config.yaml 또는 CLI로 로드."""
+"""Grouped GEMM M,N,K 설정 로더. configs/default.yaml 또는 CLI로 로드."""
 
 import sys
 from pathlib import Path
@@ -19,7 +19,7 @@ def _parse_list(s: str) -> List[int]:
 
 def load_from_yaml(path: Path) -> Tuple[List[int], List[int], List[int]]:
     """
-    config.yaml에서 grouped 설정 로드.
+    YAML config에서 grouped 설정 로드 (예: configs/default.yaml).
 
     지원 형식:
     1) uniform: batch_size, m, n, k (스칼라) → 8개 GEMM, 모두 (1024,4096,14336)
@@ -80,7 +80,7 @@ def load_grouped_sizes(
     M, N, K 리스트 로드. 우선순위: CLI(m,n,k) > config_path > default_config > 기본값.
 
     Args:
-        config_path: YAML config 파일 경로
+        config_path: YAML config 파일 경로 (없으면 default_config 사용)
         m: "1024,512,256,128" 형태의 M 리스트
         n: N 리스트
         k: K 리스트
@@ -100,7 +100,7 @@ def load_grouped_sizes(
         if path.is_absolute() or path.exists():
             actual_path = path
         else:
-            # experiments/compare_grouped/config.yaml 기준
+            # experiments/compare_grouped/configs/ 기준
             base = Path(__file__).resolve().parent
             actual_path = base / path
         m_list, n_list, k_list = load_from_yaml(actual_path)

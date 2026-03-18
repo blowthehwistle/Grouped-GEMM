@@ -25,6 +25,7 @@
 #include "cutlass/util/reference/device/tensor_fill.h"
 #include "cutlass/util/reference/host/tensor_compare.h"
 #include "cutlass/util/reference/device/gemm.h"
+#include "nvtx3/nvToolsExt.h"
 
 #include "helpers.h"
 
@@ -292,9 +293,11 @@ int main(int argc, char **argv) {
   CHECK_CUDA(cudaEventCreate(&stop_ev));
 
   CHECK_CUDA(cudaEventRecord(start_ev));
+  nvtxRangePushA("grouped_gemm");
   for (int i = 0; i < repeat; i++) {
     gemm.run();
   }
+  nvtxRangePop();
   CHECK_CUDA(cudaEventRecord(stop_ev));
   CHECK_CUDA(cudaEventSynchronize(stop_ev));
 

@@ -2,7 +2,7 @@
 """
 Grouped GEMM 백엔드별 벤치마크 실행.
 
-CUDA, Cutlass, PyTorch, Triton 백엔드가 config.yaml로 동일 M,N,K 벤치마크.
+CUDA, Cutlass, PyTorch, Triton 백엔드가 configs/default.yaml로 동일 M,N,K 벤치마크.
 --nsight 시 Nsight Compute로 프로파일링 (.ncu-rep).
 """
 
@@ -14,6 +14,10 @@ from datetime import datetime
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = REPO_ROOT / "experiments" / "compare_grouped"
+CONFIGS_DIR = CONFIG_DIR / "configs"
+_DEFAULT_YAML = CONFIGS_DIR / "default.yaml"
+_DEFAULT_YML = CONFIGS_DIR / "default.yml"
+DEFAULT_CONFIG = _DEFAULT_YAML if _DEFAULT_YAML.exists() else _DEFAULT_YML
 
 KERNEL_NAMES = {0: "cuBLAS Loop", 1: "cuBLAS Grouped API", 2: "Custom Double Buffering"}
 FP16_KERNEL_NAMES = {0: "CUDA FP16 Loop", 1: "CUDA FP16 Grouped"}
@@ -27,7 +31,7 @@ def load_unified_config(config_path):
         from grouped_config import load_grouped_sizes
         return load_grouped_sizes(
             config_path=config_path,
-            default_config=CONFIG_DIR / "config.yaml",
+            default_config=DEFAULT_CONFIG,
         )
     finally:
         if str(CONFIG_DIR) in sys.path:
@@ -89,7 +93,7 @@ def run_cuda_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra=
         print("Warning: tmain_grouped not found. Run 'make grouped' first.")
         return None
 
-    config_resolved = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    config_resolved = (Path(config_path) if config_path else DEFAULT_CONFIG).resolve()
     print(f"Config: {config_resolved}", flush=True)
     m_list, n_list, k_list = load_unified_config(config_path)
     shapes = list(zip(m_list, n_list, k_list))
@@ -198,7 +202,7 @@ def run_triton_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extr
     out_dir = benchmark_base / "triton"
     nsight_dir = (Path(nsight_out) / "triton") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
-    config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    config = (Path(config_path) if config_path else DEFAULT_CONFIG).resolve()
     cmd = [sys.executable, str(script), "--benchmark-only", "--config", str(config),
            "--repeat", "1000", "--warmup", "50"]
 
@@ -230,7 +234,7 @@ def run_torch_grouped(config_path=None, nsight=False, nsight_out=None, ncu_extra
     out_dir = benchmark_base / "torch"
     nsight_dir = (Path(nsight_out) / "torch") if nsight_out else out_dir / "nsight"
     out_dir.mkdir(parents=True, exist_ok=True)
-    config = (Path(config_path) if config_path else CONFIG_DIR / "config.yaml").resolve()
+    config = (Path(config_path) if config_path else DEFAULT_CONFIG).resolve()
     cmd = [sys.executable, str(script), "--config", str(config), "--repeat", "1000", "--warmup", "50"]
 
     try:
@@ -294,7 +298,7 @@ def main():
     parser.add_argument("--ncu-extra", type=str, default=None, help="Extra ncu options")
     args = parser.parse_args()
 
-    config_path = args.config or (CONFIG_DIR / "config.yaml" if (CONFIG_DIR / "config.yaml").exists() else None)
+    config_path = args.config or DEFAULT_CONFIG
     results_base = (REPO_ROOT / "results" / "benchmark" / args.results_subdir) if args.results_subdir else None
 
     # Nsight 결과 기본 위치: results/nsight/<timestamp>/ (백엔드별 서브폴더는 각 함수에서 생성)

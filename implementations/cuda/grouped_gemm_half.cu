@@ -193,7 +193,7 @@ int main(int argc, char **argv) {
   if (kernel_number == 0 && !k_uniform)
     std::cerr << "Note: Kernel 0 requires uniform K; using Kernel 1 (Grouped) instead.\n";
 
-  nvtxRangePushA("Kernel");
+  nvtxRangePushA("grouped_gemm");
   CHECK_CUDA(cudaEventRecord(start));
   for (int i = 0; i < repeat; i++) {
     if (eff == 0) {

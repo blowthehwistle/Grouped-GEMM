@@ -266,8 +266,8 @@ int main(int argc, char **argv) {
       std::cerr << "Note: kernel 2 requires uniform K; using kernel 1 (cuBLAS Grouped) instead.\n";
     }
 
-    // kernel to be compared
-    nvtxRangePushA("Kernel");
+    // kernel to be compared (NVTX name aligned with Triton/Torch for Nsight --nvtx-include)
+    nvtxRangePushA("grouped_gemm");
     CHECK_CUDA(cudaEventRecord(start));
     for (int i = 0; i < repeat_time; i++) {
       switch (effective_kernel) {

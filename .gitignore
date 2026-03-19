@@ -1,9 +1,16 @@
 # Ignore VSCode settings directory
 .vscode
 
-# Python virtual environment
+# Python
 .venv
 venv
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Ignore compiled binary executables (likely from Linux/Unix build)
 tmain_4k

@@ -16,9 +16,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-CONFIG_DIR = Path(__file__).resolve().parent
-REPO_ROOT = CONFIG_DIR.parent.parent
-DEFAULT_CONFIGS_DIR = CONFIG_DIR / "configs"
+from benchmark_utils import REPO_ROOT, CONFIG_DIR, CONFIGS_DIR
+
+DEFAULT_CONFIGS_DIR = CONFIGS_DIR
 
 
 def discover_configs(config_dir: Path) -> list[tuple[Path, str]]:
@@ -146,7 +146,7 @@ def main():
             for _, name in config_list
         )
         if not cuda_exists and not (REPO_ROOT / "bin" / "tmain_grouped").exists():
-            print("\n[Tip] CUDA results missing. Run 'make grouped' on this machine to build bin/tmain_grouped.", flush=True)
+            print("\n[Tip] CUDA results missing. Run 'make grouped' to build bin/tmain_grouped.", flush=True)
 
     if args.summary and summary_data:
         print("\n--- Summary ---")

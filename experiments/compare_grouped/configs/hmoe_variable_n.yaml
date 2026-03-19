@@ -1,0 +1,19 @@
+# HMoE (Heterogeneous Mixture of Experts) 스타일 설정
+# 논문: HMoE (arxiv 2408.10681) - 전문가별 intermediate size(h_ffn)가 다른 경우
+#
+# GEMM: C = A @ B
+# - M: 토큰 수 (expert별 라우팅 결과)
+# - N: expert intermediate size (h_ffn) - HMoE에서 전문가마다 다름
+# - K: hidden size (h_input) - 4096 고정
+#
+# Arithmetic 전략 (논문): relative sizes {9,11,13,15,17,19,21,23}
+# → 실제 dim으로 스케일 (5K~14K, LLaMA/Mixtral 범위)
+
+grouped:
+  m: [1024, 768, 512, 2048, 384, 256, 128, 512]   # 토큰 수 (expert별 가변)
+  n: [5632, 6912, 8192, 9472, 10624, 12032, 13184, 14336]  # h_ffn (arithmetic 스케일)
+  k: [4096, 4096, 4096, 4096, 4096, 4096, 4096, 4096]      # h_input 고정
+
+benchmark:
+  repeat: 100
+  warmup: 50

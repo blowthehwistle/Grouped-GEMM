@@ -120,7 +120,13 @@ python experiments/compare_grouped/benchmark_kernel_only.py --nsight --backend t
 ### 기타 Nsight 옵션
 
 - `--nsight-launch-count 1` (또는 `--ncu-launch-count 1`): 앱 1회만 실행 → 한 번 실행에서 뜨는 커널 개수만 확인.
-- `--nsight-launch-skip 20`: 처음 20개 커널 런치 스킵 후 수집.
+- `--nsight-launch-skip N`: 처음 N개 커널 런치 스킵 후 수집. **기본값**: 미지정 시 백엔드별로 "계산 커널만" 프로파일하도록 아래 값이 사용됨.
+  - TF32 Loop: 410 (convert 2 + warmup 50×8 + ref 8)
+  - TF32 Grouped: 910 (convert 2 + warmup 50×18 + ref 8)
+  - TF32 Custom: 60 (convert 2 + warmup 50×1 + ref 8)
+  - FP16 Grouped: 408 (warmup 50×8 + ref 8)
+  - Cutlass: 50 (warmup 50×1)
+  - Triton/Torch: NVTX로 구간 필터, launch-skip 없음.
 
 ---
 

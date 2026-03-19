@@ -147,15 +147,14 @@ int main(int argc, char **argv) {
   for (int i = 1; i < batch_size && k_uniform; i++)
     if (k_list[i] != k_list[0]) k_uniform = false;
 
-  const int warmup = (kernel_number == 2) ? 2 : 50;
+  const int warmup = 50;
   for (int i = 0; i < warmup; i++)
     runCublasTF16_Loop_with_TC(handle, d_A, d_B, d_C_ref, m_list, n_list, k_list, batch_size,
                                A_offset, B_offset, C_offset, alpha, beta);
   cudaDeviceSynchronize();
   CHECK_CUDA(cudaMemset(d_C_ref, 0, size_C * sizeof(__half)));
 
-  // kernel_number==2: Nsight profile mode. 5 runs suffice (ncu collects per-kernel metrics;
-  // 1000 would bloat .ncu-rep and runtime without adding useful profiling data).
+  // kernel_number==2: Nsight profile mode. 5 runs suffice (ncu collects per-kernel metrics).
   int repeat = (kernel_number == 2) ? 5 : 1000;
 
   if (kernel_number == 2) {

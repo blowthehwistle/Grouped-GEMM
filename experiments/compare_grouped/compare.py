@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BENCHMARK_DIR = REPO_ROOT / "results" / "benchmark"
 
 # CUDA kernel display names
-KERNEL_NAMES = {0: "cuBLAS Loop", 1: "cuBLAS Grouped API", 2: "Custom Double Buffering"}
+KERNEL_NAMES = {0: "cuBLAS Loop (TF32)", 1: "cuBLAS Grouped API (TF32)", 2: "Custom Double Buffering (TF32)"}
 
 
 def _check_validation(text: str) -> Optional[bool]:
@@ -44,7 +44,7 @@ def _parse_cuda(content: str) -> Tuple[Optional[Dict[str, Tuple[float, float, Op
 
     # Match [raw] only within the same section. Do NOT stop at "--- Performance ---"
     # (which appears before [raw]); stop only at next section header (Kernel N or CUDA FP16).
-    _section_body = r"(?:(?!\n--- (?:Kernel \d \(|CUDA FP16 (?:Loop|Grouped) ))[\s\S])*?"
+    _section_body = r"(?:(?!\n--- (?:Kernel \d \(|CUDA FP16 (?:Loop|Grouped) |cuBLAS (?:Loop|Grouped API) \())[\s\S])*?"
     for k in (0, 1, 2):
         pat = rf"--- Kernel {k} \([^)]+\) ---{_section_body}\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
         m = re.search(pat, content)
@@ -57,8 +57,11 @@ def _parse_cuda(content: str) -> Tuple[Optional[Dict[str, Tuple[float, float, Op
             val = _check_validation(section)
             results[KERNEL_NAMES[k]] = (ms, gflops_kernel, val)
 
-    for name in ("CUDA FP16 Loop", "CUDA FP16 Grouped"):
-        pat = rf"--- {re.escape(name)} ---{_section_body}\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
+    for old_hdr, display_name in [
+        ("CUDA FP16 Loop", "cuBLAS Loop (FP16)"),
+        ("CUDA FP16 Grouped", "cuBLAS Grouped API (FP16)"),
+    ]:
+        pat = rf"--- (?:{re.escape(old_hdr)}|{re.escape(display_name)}) ---{_section_body}\[raw\]\s+([\d.]+),([\d.]+),([\d.]+),([\d.]+)"
         m = re.search(pat, content)
         if m:
             full_match = m.group(0)
@@ -67,7 +70,7 @@ def _parse_cuda(content: str) -> Tuple[Optional[Dict[str, Tuple[float, float, Op
             gflops_kernel = float(m.group(4))
             ms = t_kernel * 1000
             val = _check_validation(section)
-            results[name] = (ms, gflops_kernel, val)
+            results[display_name] = (ms, gflops_kernel, val)
 
     return results if results else None, config
 

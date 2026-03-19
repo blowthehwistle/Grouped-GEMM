@@ -681,7 +681,7 @@ def run_benchmark(
     start_ev = torch.cuda.Event(enable_timing=True)
     end_ev = torch.cuda.Event(enable_timing=True)
     start_ev.record()
-    # NVTX: repeat 구간만 감싸서 프로파일 시 warmup이 아닌 실제 벤치 커널만 수집
+    #   : repeat 구간만 감싸서 프로파일 시 warmup이 아닌 실제 벤치 커널만 수집
     if torch.cuda.is_available():
         torch.cuda.nvtx.range_push("grouped_gemm")
     for _ in range(repeat):
@@ -689,6 +689,58 @@ def run_benchmark(
                        max_m=max_m, total_tiles=total_tiles)
     if torch.cuda.is_available():
         torch.cuda.nvtx.range_pop()
+    end_ev.record()
+    torch.cuda.synchronize()
+    elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
+    flops = sum(2 * m * n * k for m, n, k in zip(m_list, n_list, k_list))
+    gflops = flops * 1e-9 / (elapsed_ms / 1000)
+    return elapsed_ms, gflops
+
+
+def run_benchmark_tma(
+    m_list: List[int],
+    n_list: List[int],
+    k_list: List[int],
+    warmup: int = 50,
+    repeat: int = 1000,
+) -> tuple:
+    """TMA 커널로 벤치마크. (elapsed_ms, gflops) 반환. supports_tma() 필요."""
+    assert supports_tma()
+    group_A, group_B = make_grouped_matrices(m_list, n_list, k_list)
+    padded_A, padded_B, padded_m, padded_n, padded_k = _pad_grouped_for_triton(
+        group_A, group_B, m_list, n_list, k_list
+    )
+    padded_B_T = [b.T.contiguous() for b in padded_B]
+    group_C = [torch.empty((mp, np), device=DEVICE, dtype=torch.float16)
+               for mp, np in zip(padded_m, padded_n)]
+    A_addrs = [a.data_ptr() for a in padded_A]
+    B_T_addrs = [b.data_ptr() for b in padded_B_T]
+    C_addrs = [c.data_ptr() for c in group_C]
+    g_sizes = []
+    g_t_lds = []
+    for i in range(len(m_list)):
+        Mp, Np, Kp = padded_m[i], padded_n[i], padded_k[i]
+        g_sizes += [Mp, Np, Kp]
+        g_t_lds += [padded_A[i].stride(0), padded_B_T[i].stride(0), group_C[i].stride(0)]
+    d_a_ptrs = torch.tensor(A_addrs, device=DEVICE)
+    d_b_t_ptrs = torch.tensor(B_T_addrs, device=DEVICE)
+    d_c_ptrs = torch.tensor(C_addrs, device=DEVICE)
+    d_g_sizes = torch.tensor(g_sizes, dtype=torch.int32, device=DEVICE)
+    d_g_t_lds = torch.tensor(g_t_lds, dtype=torch.int32, device=DEVICE)
+
+    def alloc_fn(size: int, alignment: int, stream: Optional[int]):
+        return torch.empty(size, device="cuda", dtype=torch.int8)
+    triton.set_allocator(alloc_fn)
+
+    for _ in range(warmup):
+        triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_t_lds, len(m_list), dtype=torch.float16)
+    torch.cuda.synchronize()
+
+    start_ev = torch.cuda.Event(enable_timing=True)
+    end_ev = torch.cuda.Event(enable_timing=True)
+    start_ev.record()
+    for _ in range(repeat):
+        triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_t_lds, len(m_list), dtype=torch.float16)
     end_ev.record()
     torch.cuda.synchronize()
     elapsed_ms = start_ev.elapsed_time(end_ev) / repeat
@@ -714,6 +766,7 @@ if __name__ == "__main__":
     parser.add_argument("--repeat", type=int, default=1000)
     parser.add_argument("--no-config", action="store_true")
     parser.add_argument("--benchmark-only", action="store_true", help="config 모드로만 실행, perf_report 스킵")
+    parser.add_argument("--compare-tma", action="store_true", help="Triton vs Triton-TMA GFLOPS 비교 (sm90+ 필요)")
     args = parser.parse_args()
 
     use_config = args.benchmark_only or args.config or args.m or args.n or args.k
@@ -761,6 +814,51 @@ if __name__ == "__main__":
         elapsed_ms, gflops = run_benchmark(m_list, n_list, k_list, args.warmup, args.repeat)
         print(f"M,N,K: {m_list}, {n_list}, {k_list}")
         print(f"Triton grouped GEMM: {elapsed_ms:.3f} ms, {gflops:.1f} GFLOPS")
+
+        if args.compare_tma:
+            if supports_tma():
+                # TMA validation
+                group_A, group_B = make_grouped_matrices(m_list, n_list, k_list, dtype=torch.float16)
+                padded_A, padded_B, padded_m, padded_n, padded_k = _pad_grouped_for_triton(
+                    group_A, group_B, m_list, n_list, k_list
+                )
+                padded_B_T = [b.T.contiguous() for b in padded_B]
+                group_C_tma = [torch.empty((mp, np), device=DEVICE, dtype=torch.float16)
+                              for mp, np in zip(padded_m, padded_n)]
+                A_addrs = [a.data_ptr() for a in padded_A]
+                B_T_addrs = [b.data_ptr() for b in padded_B_T]
+                C_addrs = [c.data_ptr() for c in group_C_tma]
+                g_sizes = []
+                g_t_lds = []
+                for i in range(len(m_list)):
+                    g_sizes += [padded_m[i], padded_n[i], padded_k[i]]
+                    g_t_lds += [padded_A[i].stride(0), padded_B_T[i].stride(0), group_C_tma[i].stride(0)]
+                d_a_ptrs = torch.tensor(A_addrs, device=DEVICE)
+                d_b_t_ptrs = torch.tensor(B_T_addrs, device=DEVICE)
+                d_c_ptrs = torch.tensor(C_addrs, device=DEVICE)
+                d_g_sizes = torch.tensor(g_sizes, dtype=torch.int32, device=DEVICE)
+                d_g_t_lds = torch.tensor(g_t_lds, dtype=torch.int32, device=DEVICE)
+
+                def _alloc(size: int, alignment: int, stream: Optional[int]):
+                    return torch.empty(size, device="cuda", dtype=torch.int8)
+                triton.set_allocator(_alloc)
+                triton_tma_perf_fn(d_a_ptrs, d_b_t_ptrs, d_c_ptrs, d_g_sizes, d_g_t_lds, len(m_list), dtype=torch.float16)
+                torch.cuda.synchronize()
+                ref_out = [torch.matmul(a, b) for a, b in zip(group_A, group_B)]
+                for i in range(len(m_list)):
+                    m, n = m_list[i], n_list[i]
+                    assert torch.allclose(
+                        group_C_tma[i][:m, :n].float(), ref_out[i].float(),
+                        atol=1e-1, rtol=1e-1,
+                    ), f"Triton TMA validation failed at batch {i}"
+                print("Triton TMA grouped GEMM validation passed.")
+
+                elapsed_tma, gflops_tma = run_benchmark_tma(m_list, n_list, k_list, args.warmup, args.repeat)
+                print(f"Triton TMA grouped GEMM: {elapsed_tma:.3f} ms, {gflops_tma:.1f} GFLOPS")
+                print(f"TMA / Regular speedup: {gflops_tma / gflops:.2f}x")
+            else:
+                sm = torch.cuda.get_device_capability()[0] if is_cuda() else 0
+                print(f"TMA 비교 스킵: GPU가 sm90+ (TMA 지원)이 아님 (sm{sm})")
     else:
         _validate_default_shapes()
         benchmark_square_matrices.run(show_plots=True, print_data=True)
